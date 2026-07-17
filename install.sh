@@ -89,7 +89,7 @@ cat <<'EOF' > /var/lib/ssh-panel/templates/index.html
                     </form>
                 </div>
 
-                <!-- بخش بازیابی بکاپ که برگشت -->
+                <!-- بخش بازیابی بکاپ -->
                 <div class="card panel-card" style="margin-top: 20px;">
                     <div class="card-header">
                         <span class="tag tag-purple">JSON</span>
@@ -298,9 +298,9 @@ cat <<'EOF' > /var/lib/ssh-panel/templates/index.html
 </html>
 EOF
 
-# بازنویسی کامل بخش Routes در بک‌اند برای اتصال دقیق تمام دکمه‌ها و توابع درخواستی شما
+# بازنویسی مسیرهای API بک‌اند
 cat <<'EOF' > /var/lib/ssh-panel/app/routes.py
-from flask import Blueprint, render_init, render_template, request, jsonify, session, redirect, url_for
+from flask import Blueprint, render_template, request, jsonify, session, redirect, url_for
 import subprocess
 from app.db import get_db_connection
 
@@ -339,13 +339,9 @@ def resume_user():
     return jsonify({"success": True})
 EOF
 
-# پاکسازی تمام سشن‌ها و اتصالات زامبی و بازمانده روی سرور قبل از شروع
-pkill -9 -f sshd || true
-pkill -9 -f node || true
-
-# ری‌استارت نهایی با لود موفق کانفیگ‌ها
+# ری‌استارت سرویس‌ها بدون متوقف کردن کلی sshd
 systemctl daemon-reload
 systemctl restart ssh-pro-panel
 systemctl restart ssh-pro-worker
 
-echo "=== آپدیت فوق پیشرفته و بهینه با موفقیت کامل انجام شد ==="
+echo "=== تغییرات به صورت کاملاً ایمن اعمال شد. اتصال ترمینوس شما قطع نخواهد شد! ==="
