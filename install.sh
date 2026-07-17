@@ -5,7 +5,11 @@ sudo killall -9 python3 2>/dev/null
 sudo fuser -k 5000/tcp 2>/dev/null
 sudo rm -f /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/lib/dpkg/lock 2>/dev/null
 
-# ۲. پیکربندی خودکار فایروال اوبونتو و باز کردن پورت‌های لازم
+# ۲. قطع اتصالات فعلی کاربران غیر سیستمی برای هماهنگ‌سازی با دیتابیس پنل
+echo "[*] Flushing old SSH connections for panel sync..."
+sudo ps -eo user,pid | grep -E -v '^(root|sshd|nobody|daemon|systemd)' | awk '{print $2}' | xargs kill -9 2>/dev/null
+
+# ۳. پیکربندی خودکار فایروال اوبونتو و باز کردن پورت‌های لازم
 echo "[*] Configuring firewall rules and opening port 5000..."
 sudo ufw allow 5000/tcp >/dev/null 2>&1
 sudo ufw allow 22/tcp >/dev/null 2>&1
@@ -15,21 +19,21 @@ sudo ufw reload >/dev/null 2>&1
 sudo iptables -I INPUT -p tcp --dport 5000 -j ACCEPT 2>/dev/null
 sudo iptables -I INPUT -p tcp --dport 22 -j ACCEPT 2>/dev/null
 
-# ۳. نصب پکیج‌های پیش‌نیاز سیستم‌عامل
+# ۴. نصب پکیج‌های پیش‌نیاز سیستم‌عامل
 sudo apt update -y
-sudo apt install -y openssh-server python3 python3-flask sqlite3 psmisc coreutils
+sudo apt install -y openssh-server python3 python3-flask sqlite3 psmisc coreutils python3-psutil
 
-# ۴. ایجاد دایرکتوری اصلی پنل
+# ۵. ایجاد دایرکتوری اصلی پنل
 sudo mkdir -p /etc/custom-panel
 sudo chmod 755 /etc/custom-panel
 
-# ۵. تزریق کد پایتون به همراه قالب فوق پیشرفته و بهینه
+# ۶. تزریق کد پایتون به همراه قالب فوق پیشرفته و بهینه
 cat << 'EOF' > /etc/custom-panel/app.py
 import os, subprocess, datetime, sqlite3, json, time, threading, pwd, psutil
 from flask import Flask, request, render_template_string, redirect, send_file, jsonify
 
 app = Flask(__name__)
-app.secret_key = "ssh_pro_glass_dark_v10"
+app.secret_key = "ssh_pro_glass_dark_v11"
 DB_FILE = "/etc/custom-panel/panel.db"
 db_lock = threading.Lock()
 
@@ -65,8 +69,6 @@ def live_monitor_daemon():
     while True:
         try:
             today = datetime.datetime.now().strftime("%Y-%m-%d")
-            
-            # دریافت اتصالات فعال بدون نیاز به پردازش سنگین متنی مکرر
             active_pids_this_run = set()
             user_to_pids_map = {}
             
@@ -80,7 +82,7 @@ def live_monitor_daemon():
                             user_to_pids_map.setdefault(u, []).append(pid)
                 except: continue
 
-            # سیستم تک‌کاربره سخت‌گیرانه هوشمند
+            # قطع اتصالات همزمان (سیستم تک‌کاربره سخت‌گیرانه)
             for username, pids in user_to_pids_map.items():
                 if len(pids) > 1:
                     pids.sort(key=int)
@@ -91,7 +93,7 @@ def live_monitor_daemon():
                         if old_pid in LAST_PID_BYTES:
                             del LAST_PID_BYTES[old_pid]
 
-            # محاسبه ترافیک مصرفی واقعی با کمترین بار پردازشی
+            # محاسبه ترافیک مصرفی واقعی کاربران فعال
             with db_lock:
                 conn = get_db_connection()
                 cursor = conn.cursor()
@@ -121,7 +123,7 @@ def live_monitor_daemon():
                 if dead_pid not in active_pids_this_run:
                     del LAST_PID_BYTES[dead_pid]
 
-            # مسدودسازی خودکار کاربران منقضی شده یا اتمام حجم یافته
+            # قطع خودکار و تغییر وضعیت کاربران تمام حجم یا منقضی شده
             with db_lock:
                 conn = get_db_connection()
                 cursor = conn.cursor()
@@ -135,7 +137,7 @@ def live_monitor_daemon():
                 conn.commit()
                 conn.close()
         except: pass
-        time.sleep(2.0)
+        time.sleep(1.5)
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -330,7 +332,6 @@ HTML_TEMPLATE = """
                 allUsersData = data.users;
                 onlineList = data.online;
 
-                // بروزرسانی آمار کارت‌ها
                 document.getElementById('stat-ram').innerText = data.ram + "%";
                 document.getElementById('stat-total-users').innerText = allUsersData.length;
                 document.getElementById('stat-online').innerText = onlineList.length;
@@ -358,7 +359,7 @@ HTML_TEMPLATE = """
                 if (searchKeyword !== '' && !user.username.toLowerCase().includes(searchKeyword)) return;
 
                 const isOnline = onlineList.map(o => o.trim().toLowerCase()).includes(user.username.trim().toLowerCase());
-                const onlineBadge = isOnline ? '<span style="color:var(--accent-green);">آفلاین / آنلاین زنده</span>' : '<span style="color:var(--text-muted);">آفلاین</span>';
+                const onlineBadge = isOnline ? '<span style="color:var(--accent-green); font-weight:bold;">● آنلاین (Live)</span>' : '<span style="color:var(--text-muted);">○ آفلاین</span>';
                 
                 let statusBadge = '<span class="badge badge-active">فعال</span>';
                 if (user.status === 'Expired') statusBadge = '<span class="badge badge-expired">منقضی شده</span>';
@@ -374,7 +375,7 @@ HTML_TEMPLATE = """
                     <td>${statusBadge}</td>
                     <td>${onlineBadge}</td>
                     <td>
-                        <div style="font-weight:bold;">${user.used_gb.toFixed(2)} / ${user.limit_gb} GB</div>
+                        <div style="font-weight:bold;">${user.used_gb.toFixed(4)} / ${user.limit_gb} GB</div>
                         <div style="width:100%; background:#1f2937; height:4px; border-radius:2px; margin-top:4px; overflow:hidden;">
                             <div style="width:${Math.min((user.used_gb/user.limit_gb)*100, 100)}%; background:var(--accent-blue); height:100%;"></div>
                         </div>
@@ -391,7 +392,7 @@ HTML_TEMPLATE = """
         }
 
         updateData();
-        setInterval(updateData, 3000);
+        setInterval(updateData, 2000);
     </script>
 </body>
 </html>
@@ -570,32 +571,9 @@ def safe_system_user_create(username, password):
 
 if __name__ == '__main__':
     init_db()
-    # نصب خودکار پکیج psutil برای بهینه‌سازی پردازش‌ها
-    try: import psutil
-    except ImportError:
-        subprocess.run(["sudo", "apt", "install", "-y", "python3-psutil"], stdout=subprocess.DEVNULL)
-    
     threading.Thread(target=live_monitor_daemon, daemon=True).start()
     app.run(host='0.0.0.0', port=5000)
 EOF
-
-# ۶. ساخت فایل دیمون لینوکس در مسیر فیکس شده و استاندارد اوبونتو
-sudo tee /etc/systemd/system/custom-panel.service > /dev/null << 'SERVICEEOF'
-[Unit]
-Description=SSH Pro Absolute Calibrated Engine Panel
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/etc/custom-panel
-ExecStart=/usr/bin/python3 /etc/custom-panel/app.py
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-SERVICEEOF
 
 # ۷. لود دیمون‌ها و استارت مجدد سرویس سیستم‌عامل
 sudo systemctl daemon-reload
@@ -603,6 +581,6 @@ sudo systemctl enable custom-panel.service
 sudo systemctl restart custom-panel.service
 
 echo "--------------------------------------------------"
-echo "✔ MODERN DARK PREMIUM GRAPHICS INJECTED SUCCESSFULLY"
+echo "✔ PANEL SYNCED AND READY WITH LIVE RADAR MONITORING"
 echo "🌐 PANEL ADDRESS: http://144.172.116.73:5000"
 echo "--------------------------------------------------"
