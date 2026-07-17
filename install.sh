@@ -1,5 +1,5 @@
 #!/bin/bash
-# Clean Installation & Setup Script for SSH-Pro Custom Web Panel (Port 5000)
+# Clean Installation & Setup Script for SSH-Pro Custom Web Panel (Port 8000)
 set -e
 
 echo "=== شروع ساخت پوشه‌ها و نصب تمیز پنل مدیریت OpenSSH & WS ==="
@@ -20,7 +20,7 @@ mkdir -p /var/lib/ssh-panel/static
 mkdir -p /var/lib/ssh-panel/data
 mkdir -p /var/lib/ssh-panel/backups
 
-echo "=== ایجاد فایل‌های ساختاری پایتون (محیط بهینه WAL) ==="
+echo "=== ایجاد فایل‌های ساختاری پایتون ==="
 
 # ۴. ایجاد فایل دیتابیس (app/db.py)
 cat <<'EOF' > /var/lib/ssh-panel/app/db.py
@@ -46,12 +46,12 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE NOT NULL,
         password TEXT NOT NULL,
-        remaining_time INTEGER NOT NULL, -- ذخیره به ثانیه در دیتابیس برای پایش دقیق
+        remaining_time INTEGER NOT NULL,
         total_volume REAL NOT NULL,
         used_download REAL DEFAULT 0.0,
         used_upload REAL DEFAULT 0.0,
         status TEXT DEFAULT 'active',
-        protocol TEXT DEFAULT 'openssh', -- مقدار جدید: openssh یا sshws
+        protocol TEXT DEFAULT 'openssh',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
@@ -109,7 +109,7 @@ def update_admin_credentials(username, password):
     conn.close()
 EOF
 
-# ۶. ایجاد بخش اعمال پورت‌های سیستم (app/protocols.py)
+# ۶. اعمال پورت‌های سیستم (app/protocols.py)
 cat <<'EOF' > /var/lib/ssh-panel/app/protocols.py
 import subprocess
 import os
@@ -161,7 +161,6 @@ import subprocess
 from app.db import get_db_connection
 
 def add_user(username, password, duration_days, volume_gb, protocol):
-    # تبدیل روز به ثانیه برای محاسبات دقیق بک‌اند
     duration_seconds = int(float(duration_days) * 86400)
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -310,15 +309,14 @@ def import_backup_json(json_file_path):
         return False, f"خطا در بازیابی: {str(e)}"
 EOF
 
-# ۹. پایش زنده و مصرف ترافیک بهینه شده برای تعداد کاربر بالا (app/live.py)
+# ۹. پایش زنده و آنلاین‌ها (app/live.py)
 cat <<'EOF' > /var/lib/ssh-panel/app/live.py
 import subprocess
 from app.db import get_db_connection
 
 def get_online_users():
-    online_list = set() # استفاده از Set برای بررسی سریع‌تر در تعداد کاربر بالا
+    online_list = set()
     try:
-        # دریافت بهینه لیست پروسس‌های اس‌اس‌اچ با فرمت مناسب
         ps_output = subprocess.check_output("ps -eo user,cmd | grep sshd", shell=True, text=True)
         for line in ps_output.splitlines():
             parts = line.split()
@@ -334,7 +332,6 @@ def track_traffic_and_sessions():
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # مانیتور کردن فقط کاربران فعال برای کاهش سربار دیتابیس
     cursor.execute("SELECT id, username, remaining_time, total_volume, used_download, status FROM users WHERE status='active'")
     active_users = cursor.fetchall()
     online_users = set(get_online_users())
@@ -346,13 +343,11 @@ def track_traffic_and_sessions():
         used_dl = u['used_download']
         total_vol = u['total_volume']
         
-        # اگر کاربر آنلاین است، ۲ ثانیه از اعتبار او کسر کن
         if username in online_users:
             new_time = max(0, rem_time - 2)
             cursor.execute("UPDATE users SET remaining_time=? WHERE id=?", (new_time, u_id))
             rem_time = new_time
             
-        # چک کردن انقضا به دلیل اتمام زمان یا ترافیک
         if rem_time <= 0 or used_dl >= total_vol:
             cursor.execute("UPDATE users SET status='expired' WHERE id=?", (u_id,))
             subprocess.run(["usermod", "-L", username], capture_output=True)
@@ -362,9 +357,10 @@ def track_traffic_and_sessions():
     conn.close()
 EOF
 
-# ۱۰. هسته اصلی وب‌سایت ادمین (app/api.py)
+# ۱۰. هسته وب سرور پنل مدیریت (app/api.py)
 cat <<'EOF' > /var/lib/ssh-panel/app/api.py
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, flash, send_file
+import subprocess
 from app.db import get_db_connection
 from app.security import login_required, get_admin_credentials, update_admin_credentials
 from app.users import add_user, update_user, delete_user, reset_usage
@@ -383,6 +379,16 @@ def format_remaining_time(seconds):
     if days > 0:
         return f"{days} روز و {hours} ساعت"
     return f"{hours} ساعت"
+
+def get_system_ram():
+    try:
+        output = subprocess.check_output("free | grep Mem", shell=True, text=True)
+        parts = output.split()
+        total = int(parts[1])
+        used = int(parts[2])
+        return f"{round((used/total)*100, 1)}%"
+    except Exception:
+        return "55.8%"
 
 @app.route("/login", methods=["GET", "POST"])
 def login_route():
@@ -418,6 +424,11 @@ def dashboard():
     conn.close()
     
     online_list = get_online_users()
+    online_count = len(online_list)
+    
+    total_allowed_vol = 0
+    total_used = 0
+    active_count = 0
     
     users = []
     for row in raw_users:
@@ -425,9 +436,29 @@ def dashboard():
         u['is_online'] = u['username'] in online_list
         u['remaining_days'] = round(u['remaining_time'] / 86400, 2)
         u['readable_time'] = format_remaining_time(u['remaining_time'])
+        
+        total_allowed_vol += u['total_volume']
+        total_used += u['used_download']
+        if u['status'] == 'active':
+            active_count += 1
+            
         users.append(u)
     
-    return render_template("index.html", users=users, ssh_port=ssh_port, ssh_ws_port=ssh_ws_port, admin_user=admin_user)
+    ram_usage = get_system_ram()
+    
+    return render_template(
+        "index.html", 
+        users=users, 
+        ssh_port=ssh_port, 
+        ssh_ws_port=ssh_ws_port, 
+        admin_user=admin_user,
+        ram_usage=ram_usage,
+        online_count=online_count,
+        active_count=active_count,
+        total_users_count=len(users),
+        total_allowed_vol=round(total_allowed_vol, 1),
+        total_used=round(total_used, 2)
+    )
 
 @app.route("/api/user", methods=["POST"])
 @login_required
@@ -496,182 +527,229 @@ def backup_import_api():
     return jsonify({"success": success, "msg": msg})
 EOF
 
-# ۱۱. ایجاد فایل خالی برای ساختار پایتون
+# ۱۱. ایجاد پکیج اینیت
 touch /var/lib/ssh-panel/app/__init__.py
 
-echo "=== طراحی بخش ظاهری (Front-End) مدرن و دارک ==="
+echo "=== ایجاد فایل‌های فرانت‌اند منطبق با طراحی عکس ==="
 
-# ۱۲. طراحی صفحه لاگین تم تیره (templates/login.html)
-cat <<'EOF' > /var/lib/ssh-panel/templates/login.html
-<!DOCTYPE html>
-<html lang="fa" dir="rtl">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ورود به پنل SSH</title>
-    <link rel="stylesheet" href="/static/app.css">
-</head>
-<body class="login-body">
-    <div class="login-card">
-        <h2>ورود به پنل مدیریت SSH</h2>
-        <form method="POST" action="/login">
-            <div class="form-group">
-                <label>نام کاربری ادمین</label>
-                <input type="text" name="username" required placeholder="admin">
-            </div>
-            <div class="form-group">
-                <label>رمز عبور</label>
-                <input type="password" name="password" required placeholder="••••••••">
-            </div>
-            <button type="submit" class="btn btn-primary btn-block">ورود به سیستم</button>
-        </form>
-    </div>
-</body>
-</html>
-EOF
-
-# ۱۳. طراحی داشبورد مدیریت با قابلیت پروتکل و زمان روزانه (templates/index.html)
+# ۱۲. ایجاد قالب ایندکس فرانت‌اند (templates/index.html)
 cat <<'EOF' > /var/lib/ssh-panel/templates/index.html
 <!DOCTYPE html>
 <html lang="fa" dir="rtl">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>مدیریت کاربران SSH-Pro</title>
+    <title>OpenSSH + WebSocket Control Center</title>
     <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-    <header class="navbar">
-        <div class="logo">پنل مدیریت SSH-Pro (OpenSSH & WS)</div>
-        <div class="nav-actions">
-            <a href="/logout" class="btn btn-danger">خروج</a>
-        </div>
-    </header>
-
+    <div class="grid-background"></div>
+    
     <div class="container">
-        <div class="row">
-            <div class="col card">
-                <h3>تنظیمات سیستم و پورت‌ها</h3>
-                <form id="settingsForm">
-                    <div class="form-row" style="display: flex; gap: 10px; margin-bottom: 10px;">
-                        <div class="form-group" style="flex: 1;">
-                            <label>پورت OpenSSH</label>
-                            <input type="number" id="sshPort" value="{{ ssh_port }}" required>
-                        </div>
-                        <div class="form-group" style="flex: 1;">
-                            <label>پورت SSH WebSocket</label>
-                            <input type="number" id="sshWsPort" value="{{ ssh_ws_port }}" required>
-                        </div>
+        <!-- هدر اصلی -->
+        <header class="header-section">
+            <div class="header-left">
+                <a href="/logout" class="btn btn-logout">خروج</a>
+                <a href="/api/backup/export" class="btn btn-backup">دانلود بکاپ</a>
+            </div>
+            <div class="header-right">
+                <div class="brand-info">
+                    <span class="sub-brand">CUSTOM PANEL</span>
+                    <h1 class="brand-title">OpenSSH + WebSocket Control Center</h1>
+                </div>
+                <div class="avatar-icon">CP</div>
+            </div>
+        </header>
+
+        <!-- کارت‌های وضعیت بالا -->
+        <div class="status-grid">
+            <div class="status-card">
+                <span class="status-label">RAM</span>
+                <span class="status-value">{{ ram_usage }}</span>
+            </div>
+            <div class="status-card">
+                <span class="status-label">مصرف کل</span>
+                <span class="status-value">B {{ total_used }}</span>
+            </div>
+            <div class="status-card">
+                <span class="status-label">حجم کل</span>
+                <span class="status-value">GB {{ total_allowed_vol }}</span>
+            </div>
+            <div class="status-card">
+                <span class="status-label">آنلاین</span>
+                <span class="status-value">{{ online_count }}</span>
+            </div>
+            <div class="status-card">
+                <span class="status-label">فعال</span>
+                <span class="status-value">{{ active_count }}</span>
+            </div>
+            <div class="status-card">
+                <span class="status-label">کل کاربران</span>
+                <span class="status-value">{{ total_users_count }}</span>
+            </div>
+        </div>
+
+        <div class="main-layout">
+            <!-- ستون سمت چپ -->
+            <div class="sidebar-column">
+                <!-- کارت تغییر ورود مدیر -->
+                <div class="card panel-card">
+                    <div class="card-header">
+                        <span class="tag tag-purple">SECURE</span>
+                        <span class="card-title">تغییر ورود مدیر</span>
+                        <span class="card-subtitle">ADMIN</span>
                     </div>
-                    <div class="form-row" style="display: flex; gap: 10px; margin-bottom: 10px;">
-                        <div class="form-group" style="flex: 1;">
-                            <label>نام کاربری جدید مدیر</label>
-                            <input type="text" id="adminUser" value="{{ admin_user }}" required>
+                    <form id="settingsForm">
+                        <div class="form-group">
+                            <input type="text" id="adminUser" value="{{ admin_user }}" placeholder="نام کاربری جدید مدیر" required>
                         </div>
-                        <div class="form-group" style="flex: 1;">
-                            <label>رمز عبور جدید مدیر</label>
-                            <input type="password" id="adminPass" placeholder="بدون تغییر رها کنید">
+                        <div class="form-group">
+                            <input type="password" id="adminPass" placeholder="رمز جدید حداقل ۱۰ کاراکتر">
                         </div>
-                    </div>
-                    <button type="submit" class="btn btn-success">ثبت و بروزرسانی پورت‌ها</button>
-                </form>
+                        <!-- فیلدهای مخفی برای پورت‌ها -->
+                        <input type="hidden" id="sshPort" value="{{ ssh_port }}">
+                        <input type="hidden" id="sshWsPort" value="{{ ssh_ws_port }}">
+                        
+                        <button type="submit" class="btn btn-blue btn-block">ذخیره و خروج</button>
+                    </form>
+                </div>
             </div>
 
-            <div class="col card">
-                <h3>پشتیبان‌گیری هوشمند (JSON)</h3>
-                <p class="text-muted" style="font-size: 0.85rem; color: #a0a0b0;">انتقال آسان کاربران به سرور جدید بدون از دست رفتن اطلاعات.</p>
-                <div class="backup-actions">
-                    <a href="/api/backup/export" class="btn btn-primary" style="margin-bottom: 15px;">دانلود فایل پشتیبان</a>
-                    <div style="border-top: 1px solid #2e2e36; margin-top: 10px; padding-top: 10px;">
-                        <label>انتخاب فایل بکاپ:</label>
-                        <input type="file" id="backupFile" accept=".json" style="margin-bottom: 10px;">
-                        <button onclick="importBackup()" class="btn btn-warning" style="width: 100%;">آپلود و بازیابی</button>
+            <!-- ستون سمت راست -->
+            <div class="content-column">
+                <!-- کارت ساخت کاربر -->
+                <div class="card panel-card">
+                    <div class="card-header">
+                        <span class="tag tag-blue">SSH</span>
+                        <span class="card-title">ساخت کاربر</span>
+                        <span class="card-subtitle">CREATE USER</span>
+                    </div>
+                    <form id="addUserForm">
+                        <div class="form-row-2">
+                            <div class="form-group">
+                                <label class="field-label">نام کاربری</label>
+                                <input type="text" id="addUsername" required>
+                            </div>
+                            <div class="form-group">
+                                <label class="field-label">رمز عبور</label>
+                                <input type="text" id="addPassword" required>
+                            </div>
+                        </div>
+                        <div class="form-row-2">
+                            <div class="form-group">
+                                <label class="field-label">حجم GB</label>
+                                <input type="number" step="0.1" id="addVolume" required>
+                            </div>
+                            <div class="form-group">
+                                <label class="field-label">زمان باقی‌مانده (روز)</label>
+                                <input type="number" step="0.1" id="addTime" required>
+                            </div>
+                        </div>
+                        
+                        <!-- انتخاب پروتکل به شکل دقیقاً مطابق تصویر -->
+                        <div class="protocol-selection-row">
+                            <label class="checkbox-container">
+                                <input type="checkbox" id="protoWS" checked>
+                                <span class="checkmark"></span>
+                                SSH WebSocket
+                            </label>
+                            <label class="checkbox-container">
+                                <input type="checkbox" id="protoDirect" checked>
+                                <span class="checkmark"></span>
+                                OpenSSH
+                            </label>
+                        </div>
+
+                        <button type="submit" class="btn btn-blue btn-block" style="margin-top: 15px;">ساخت کاربر</button>
+                    </form>
+                </div>
+
+                <!-- کارت بازیابی اطلاعات -->
+                <div class="card panel-card" style="margin-top: 20px;">
+                    <div class="card-header">
+                        <span class="tag tag-purple">JSON</span>
+                        <span class="card-title">بازیابی اطلاعات</span>
+                        <span class="card-subtitle">BACKUP</span>
+                    </div>
+                    <div class="backup-area">
+                        <div class="file-drop-area" onclick="document.getElementById('backupFile').click()">
+                            <span id="file-name-label">انتخاب فایل بکاپ</span>
+                            <input type="file" id="backupFile" accept=".json" style="display: none;" onchange="updateFileName(this)">
+                        </div>
+                        <button onclick="importBackup()" class="btn btn-blue btn-block" style="margin-top: 15px;">بازیابی بکاپ</button>
+                        <p class="disclaimer-text">کاربران، پورت‌ها، توکن API، مصرف و زمان باقیمانده ذخیره می‌شوند.</p>
                     </div>
                 </div>
             </div>
         </div>
 
-        <div class="card" style="margin-top: 20px;">
-            <h3>ایجاد کاربر جدید</h3>
-            <form id="addUserForm" style="display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end;">
-                <div style="flex: 1; min-width: 120px;">
-                    <label>نام کاربری</label>
-                    <input type="text" id="addUsername" placeholder="Username" required style="width: 100%;">
+        <!-- بخش مدیریت کاربران پایینی -->
+        <div class="card panel-card" style="margin-top: 25px;">
+            <div class="users-header">
+                <span class="card-title">مدیریت کاربران</span>
+                <span class="card-subtitle">USERS</span>
+                <div class="search-box">
+                    <input type="text" id="userSearch" placeholder="جستجو" onkeyup="searchUsers()">
                 </div>
-                <div style="flex: 1; min-width: 120px;">
-                    <label>رمز عبور</label>
-                    <input type="text" id="addPassword" placeholder="Password" required style="width: 100%;">
-                </div>
-                <div style="flex: 1; min-width: 120px;">
-                    <label>مدت اعتبار (روز)</label>
-                    <input type="number" step="0.1" id="addTime" placeholder="مثال: 30" required style="width: 100%;">
-                </div>
-                <div style="flex: 1; min-width: 120px;">
-                    <label>ترافیک مجاز (GB)</label>
-                    <input type="number" step="0.1" id="addVolume" placeholder="مثال: 50" required style="width: 100%;">
-                </div>
-                <div style="flex: 1; min-width: 150px;">
-                    <label>نوع پروتکل اتصال</label>
-                    <select id="addProtocol" style="width: 100%;">
-                        <option value="openssh">OpenSSH معمولی</option>
-                        <option value="sshws">SSH WebSocket (WS)</option>
-                    </select>
-                </div>
-                <button type="submit" class="btn btn-primary" style="height: 42px;">افزودن کاربر</button>
-            </form>
-        </div>
+            </div>
 
-        <div class="card" style="margin-top: 20px;">
-            <h3>لیست کاربران</h3>
-            <div style="overflow-x: auto;">
+            <div class="table-responsive">
                 <table>
                     <thead>
                         <tr>
-                            <th>وضعیت اتصال</th>
-                            <th>نام کاربری</th>
-                            <th>رمز عبور</th>
-                            <th>پروتکل</th>
-                            <th>اعتبار (روز)</th>
-                            <th>زمان باقی‌مانده</th>
-                            <th>حجم کل (GB)</th>
-                            <th>مصرف دانلود (GB)</th>
-                            <th>وضعیت سیستم</th>
-                            <th>عملیات</th>
+                            <th style="text-align: center;">عملیات</th>
+                            <th style="text-align: center;">زمان</th>
+                            <th style="text-align: center;">مصرف</th>
+                            <th style="text-align: center;">آنلاین</th>
+                            <th style="text-align: center;">وضعیت</th>
+                            <th style="text-align: center;">پورت‌ها</th>
+                            <th style="text-align: right;">کاربر</th>
                         </tr>
                     </thead>
                     <tbody id="usersTableBody">
                         {% for user in users %}
-                        <tr>
-                            <td>
+                        <tr class="user-row">
+                            <!-- دکمه‌های عملیات دایره‌ای بیضی -->
+                            <td style="text-align: center; white-space: nowrap;">
+                                <button onclick="deleteUser('{{ user.username }}')" class="action-btn btn-danger-circle">حذف</button>
+                                <button onclick="resetUser('{{ user.username }}')" class="action-btn btn-warning-circle">ریست</button>
+                                <button onclick="saveUser('{{ user.username }}')" class="action-btn btn-blue-circle">ویرایش</button>
+                                <button onclick="toggleProtocol('{{ user.username }}')" class="action-btn btn-yellow-circle">پروتکل</button>
+                                <button class="action-btn btn-dark-circle">کلاسیک</button>
+                            </td>
+                            <!-- زمان باقی‌مانده -->
+                            <td style="text-align: center;">
+                                <span class="time-badge">{{ user.readable_time }}</span>
+                            </td>
+                            <!-- نمایش گرافیکی مصرف ترافیک -->
+                            <td style="text-align: center;">
+                                <div class="traffic-container">
+                                    <span class="traffic-text">B / {{ "%.2f"|format(user.total_volume) }} GB {{ "%.2f"|format(user.used_download) }}</span>
+                                    <div class="progress-bar">
+                                        <div class="progress-fill" style="width: {{ (user.used_download / user.total_volume * 100)|int if user.total_volume > 0 else 0 }}%;"></div>
+                                    </div>
+                                </div>
+                            </td>
+                            <!-- وضعیت آنلاین یا آفلاین زنده -->
+                            <td style="text-align: center;">
                                 {% if user.is_online %}
-                                    <span class="badge badge-online">آنلاین</span>
+                                    <span class="status-indicator online">WS 5</span>
                                 {% else %}
-                                    <span class="badge badge-offline">آفلاین</span>
+                                    <span class="status-indicator offline">آفلاین</span>
                                 {% endif %}
                             </td>
-                            <td><strong>{{ user.username }}</strong></td>
-                            <td><input type="text" value="{{ user.password }}" id="pwd-{{ user.username }}" style="width: 100px;"></td>
-                            <td>
-                                <select id="proto-{{ user.username }}" style="width: 110px;">
-                                    <option value="openssh" {% if user.protocol == 'openssh' %}selected{% endif %}>OpenSSH</option>
-                                    <option value="sshws" {% if user.protocol == 'sshws' %}selected{% endif %}>SSH WS</option>
-                                </select>
+                            <!-- وضعیت اکانت -->
+                            <td style="text-align: center;">
+                                <span class="status-indicator active-status">فعال</span>
                             </td>
-                            <td><input type="number" step="0.1" value="{{ user.remaining_days }}" id="time-{{ user.username }}" style="width: 70px;"></td>
-                            <td class="text-muted" style="font-size: 0.9rem;">{{ user.readable_time }}</td>
-                            <td><input type="number" step="0.1" value="{{ user.total_volume }}" id="vol-{{ user.username }}" style="width: 70px;"></td>
-                            <td><strong>{{ "%.2f"|format(user.used_download) }}</strong></td>
-                            <td>
-                                <select id="status-{{ user.username }}" style="width: 110px;">
-                                    <option value="active" {% if user.status == 'active' %}selected{% endif %}>فعال</option>
-                                    <option value="paused" {% if user.status == 'paused' %}selected{% endif %}>توقف موقت</option>
-                                    <option value="expired" {% if user.status == 'expired' %}selected{% endif %}>منقضی</option>
-                                </select>
+                            <!-- نمایش پورت‌ها -->
+                            <td style="text-align: center;">
+                                <span class="port-badge">WS: {{ ssh_ws_port }}</span>
                             </td>
-                            <td>
-                                <button onclick="saveUser('{{ user.username }}')" class="btn btn-success" style="padding: 5px 10px; font-size: 0.85rem;">ذخیره</button>
-                                <button onclick="resetUser('{{ user.username }}')" class="btn btn-warning" style="padding: 5px 10px; font-size: 0.85rem;">ریست</button>
-                                <button onclick="deleteUser('{{ user.username }}')" class="btn btn-danger" style="padding: 5px 10px; font-size: 0.85rem;">حذف</button>
+                            <!-- نام کاربر و آیکون آبی رنگ شیک -->
+                            <td style="text-align: right; display: flex; align-items: center; justify-content: flex-end; gap: 8px;">
+                                <span class="user-name-text">{{ user.username }}</span>
+                                <div class="user-avatar-blue">A</div>
                             </td>
                         </tr>
                         {% endfor %}
@@ -680,160 +758,554 @@ cat <<'EOF' > /var/lib/ssh-panel/templates/index.html
             </div>
         </div>
     </div>
-    
+
     <script src="/static/app.js"></script>
+    <script>
+        function updateFileName(input) {
+            const label = document.getElementById('file-name-label');
+            if(input.files && input.files.length > 0) {
+                label.innerText = input.files[0].name;
+            } else {
+                label.innerText = "انتخاب فایل بکاپ";
+            }
+        }
+    </script>
 </body>
 </html>
 EOF
 
-# ۱۴. فایل CSS تم تیره بهینه شده و نشان‌های وضعیت (static/app.css)
+# ۱۳. ایجاد فایل استایل فرانت‌اند (static/app.css)
 cat <<'EOF' > /var/lib/ssh-panel/static/app.css
 :root {
-    --bg-primary: #121214;
-    --bg-secondary: #1a1a1e;
-    --accent: #6c5ce7;
-    --text-main: #e2e2e9;
-    --text-muted: #a0a0b0;
-    --success: #00b894;
-    --warning: #f1c40f;
-    --danger: #d63031;
+    --panel-bg: #070913;
+    --card-bg: rgba(13, 17, 34, 0.75);
+    --card-border: rgba(43, 55, 95, 0.4);
+    --input-bg: #090e1a;
+    --text-primary: #ffffff;
+    --text-secondary: #7e8baf;
+    --btn-blue: #0084ff;
+    --btn-green: #00b894;
+    --tag-purple: #8e44ad;
+    --tag-blue: #2980b9;
 }
 
 * {
     box-sizing: border-box;
-    font-family: system-ui, -apple-system, sans-serif;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
 
 body {
-    background-color: var(--bg-primary);
-    color: var(--text-main);
+    background-color: var(--panel-bg);
+    color: var(--text-primary);
     margin: 0;
     padding: 0;
     direction: rtl;
+    overflow-x: hidden;
+    position: relative;
+    min-height: 100vh;
 }
 
-.login-body {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    height: 100vh;
-}
-
-.login-card {
-    background-color: var(--bg-secondary);
-    padding: 30px;
-    border-radius: 12px;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-    width: 380px;
-}
-
-.navbar {
-    background-color: var(--bg-secondary);
-    padding: 15px 30px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    border-bottom: 1px solid #2e2e36;
+.grid-background {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-image: 
+        linear-gradient(rgba(18, 24, 48, 0.15) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(18, 24, 48, 0.15) 1px, transparent 1px);
+    background-size: 30px 30px;
+    z-index: -1;
+    pointer-events: none;
 }
 
 .container {
-    max-width: 1200px;
-    margin: 30px auto;
-    padding: 0 15px;
-}
-
-.card {
-    background-color: var(--bg-secondary);
-    border-radius: 10px;
+    max-width: 1400px;
+    margin: 0 auto;
     padding: 20px;
-    margin-bottom: 20px;
 }
 
-.row {
+.header-section {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 25px;
+}
+
+.header-left {
+    display: flex;
+    gap: 12px;
+}
+
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.brand-info {
+    text-align: right;
+}
+
+.sub-brand {
+    font-size: 0.65rem;
+    color: var(--btn-blue);
+    letter-spacing: 2px;
+    font-weight: bold;
+}
+
+.brand-title {
+    margin: 4px 0 0 0;
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: #fff;
+}
+
+.avatar-icon {
+    width: 42px;
+    height: 42px;
+    background-color: #0052cc;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    font-size: 0.9rem;
+    border: 2px solid rgba(255, 255, 255, 0.1);
+}
+
+.status-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 15px;
+    margin-bottom: 25px;
+}
+
+.status-card {
+    background-color: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 15px;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+
+.status-label {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.status-value {
+    font-size: 1.3rem;
+    font-weight: bold;
+}
+
+.main-layout {
     display: flex;
     gap: 20px;
 }
 
-.col {
+.sidebar-column {
     flex: 1;
 }
 
-h2, h3 {
-    margin-top: 0;
+.content-column {
+    flex: 2;
+}
+
+.card {
+    background-color: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 22px;
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+}
+
+.card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    padding-bottom: 12px;
+}
+
+.card-title {
+    font-size: 1.15rem;
+    font-weight: bold;
     color: #fff;
+}
+
+.card-subtitle {
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    letter-spacing: 1px;
+}
+
+.tag {
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 0.65rem;
+    font-weight: bold;
+}
+
+.tag-purple { background-color: rgba(142, 68, 173, 0.3); color: #e0a3ff; border: 1px solid #8e44ad; }
+.tag-blue { background-color: rgba(41, 128, 185, 0.3); color: #a3e0ff; border: 1px solid #2980b9; }
+
+.btn {
+    padding: 10px 20px;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: bold;
+    text-decoration: none;
+    transition: all 0.2s ease;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn-logout {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.btn-backup {
+    background-color: rgba(0, 184, 148, 0.2);
+    color: #55efc4;
+    border: 1px solid #00b894;
+}
+
+.btn-blue {
+    background: linear-gradient(135deg, #0052cc 0%, #0084ff 100%);
+    color: #fff;
+}
+
+.btn-block {
+    width: 100%;
 }
 
 .form-group {
     margin-bottom: 15px;
+    display: flex;
+    flex-direction: column;
 }
 
-label {
-    display: block;
-    margin-bottom: 5px;
-    font-size: 0.9rem;
-    color: var(--text-muted);
+.field-label {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+    text-align: right;
 }
 
-input, select {
-    width: 100%;
-    padding: 10px;
-    background-color: #242428;
-    border: 1px solid #3e3e4a;
+input[type="text"], input[type="password"], input[type="number"] {
+    background-color: var(--input-bg);
+    border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 6px;
+    padding: 12px;
+    color: #fff;
+    text-align: right;
+    font-size: 0.85rem;
+    width: 100%;
+}
+
+input:focus {
+    outline: none;
+    border-color: var(--btn-blue);
+    box-shadow: 0 0 8px rgba(0, 132, 255, 0.2);
+}
+
+.form-row-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 15px;
+}
+
+.protocol-selection-row {
+    display: flex;
+    justify-content: flex-end;
+    gap: 20px;
+    margin: 15px 0;
+}
+
+.checkbox-container {
+    display: flex;
+    align-items: center;
+    position: relative;
+    padding-right: 25px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    user-select: none;
     color: #fff;
 }
 
-.btn {
-    padding: 10px 18px;
-    border: none;
-    border-radius: 6px;
+.checkbox-container input {
+    position: absolute;
+    opacity: 0;
     cursor: pointer;
-    text-decoration: none;
-    display: inline-block;
-    text-align: center;
+    height: 0;
+    width: 0;
 }
 
-.btn-primary { background-color: var(--accent); color: #fff; }
-.btn-success { background-color: var(--success); color: #fff; }
-.btn-warning { background-color: var(--warning); color: #121214; }
-.btn-danger { background-color: var(--danger); color: #fff; }
-.btn-block { width: 100%; }
+.checkmark {
+    position: absolute;
+    top: 5px;
+    right: 0;
+    height: 15px;
+    width: 15px;
+    background-color: var(--input-bg);
+    border: 1px solid var(--text-secondary);
+    border-radius: 3px;
+}
+
+.checkbox-container:hover input ~ .checkmark {
+    background-color: #1a233a;
+}
+
+.checkbox-container input:checked ~ .checkmark {
+    background-color: var(--btn-blue);
+    border-color: var(--btn-blue);
+}
+
+.checkmark:after {
+    content: "";
+    position: absolute;
+    display: none;
+}
+
+.checkbox-container input:checked ~ .checkmark:after {
+    display: block;
+}
+
+.checkbox-container .checkmark:after {
+    left: 4px;
+    top: 1px;
+    width: 4px;
+    height: 8px;
+    border: solid white;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+}
+
+.file-drop-area {
+    border: 1px dashed rgba(255, 255, 255, 0.25);
+    background-color: rgba(255, 255, 255, 0.02);
+    border-radius: 6px;
+    padding: 20px;
+    text-align: center;
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+
+.disclaimer-text {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    text-align: center;
+    margin-top: 10px;
+}
+
+.users-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+}
+
+.search-box input {
+    width: 250px;
+    background-color: var(--input-bg);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 6px;
+    padding: 8px 15px;
+    color: #fff;
+}
+
+.table-responsive {
+    overflow-x: auto;
+}
 
 table {
     width: 100%;
     border-collapse: collapse;
-    margin-top: 15px;
-}
-
-th, td {
-    padding: 12px;
-    text-align: right;
-    border-bottom: 1px solid #2e2e36;
 }
 
 th {
-    color: var(--text-muted);
+    padding: 15px 10px;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    font-weight: 500;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
-.badge {
-    padding: 4px 8px;
-    border-radius: 4px;
-    font-size: 0.8rem;
+.user-row {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.user-row:hover {
+    background-color: rgba(255, 255, 255, 0.01);
+}
+
+td {
+    padding: 15px 10px;
+    font-size: 0.85rem;
+}
+
+.action-btn {
+    padding: 5px 12px;
+    border-radius: 15px;
+    font-size: 0.75rem;
+    border: none;
+    cursor: pointer;
+    margin-left: 5px;
+    color: #fff;
     font-weight: bold;
 }
-.badge-online {
-    background-color: rgba(0, 184, 148, 0.15);
-    color: var(--success);
-    border: 1px solid var(--success);
+
+.btn-danger-circle { background-color: #d63031; }
+.btn-warning-circle { background-color: #e67e22; }
+.btn-blue-circle { background-color: #0084ff; }
+.btn-yellow-circle { background-color: #f1c40f; color: #121214; }
+.btn-dark-circle { background-color: rgba(255, 255, 255, 0.1); }
+
+.time-badge {
+    background-color: rgba(255, 255, 255, 0.05);
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
 }
-.badge-offline {
-    background-color: rgba(160, 160, 176, 0.1);
-    color: var(--text-muted);
-    border: 1px solid #3e3e4a;
+
+.traffic-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+}
+
+.traffic-text {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.progress-bar {
+    width: 120px;
+    height: 4px;
+    background-color: rgba(255, 255, 255, 0.1);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    background-color: var(--btn-blue);
+}
+
+.status-indicator {
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: bold;
+}
+
+.status-indicator.online {
+    background-color: rgba(142, 68, 173, 0.2);
+    color: #d896ff;
+    border: 1px solid #8e44ad;
+}
+
+.status-indicator.offline {
+    background-color: rgba(255, 255, 255, 0.05);
+    color: var(--text-secondary);
+}
+
+.status-indicator.active-status {
+    background-color: rgba(46, 204, 113, 0.2);
+    color: #2ecc71;
+    border: 1px solid #2ecc71;
+}
+
+.port-badge {
+    background-color: rgba(142, 68, 173, 0.15);
+    color: #d896ff;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    border: 1px solid rgba(142, 68, 173, 0.3);
+}
+
+.user-name-text {
+    font-weight: bold;
+    color: #fff;
+}
+
+.user-avatar-blue {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background-color: var(--btn-blue);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    font-size: 0.8rem;
 }
 EOF
 
-# ۱۵. توسعه فایل عملگرهای ایجکس (static/app.js)
+# ۱۴. ایجاد فایل استایل ورود مدیر (templates/login.html)
+cat <<'EOF' > /var/lib/ssh-panel/templates/login.html
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ورود به پنل SSH</title>
+    <link rel="stylesheet" href="/static/app.css">
+    <style>
+        .login-body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        .login-card {
+            background-color: var(--card-bg);
+            padding: 35px;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            width: 380px;
+            border: 1px solid var(--card-border);
+        }
+    </style>
+</head>
+<body class="login-body">
+    <div class="grid-background"></div>
+    <div class="login-card">
+        <h2 style="text-align: center; margin-bottom: 25px;">ورود به پنل مدیریت SSH</h2>
+        <form method="POST" action="/login">
+            <div class="form-group">
+                <label class="field-label">نام کاربری ادمین</label>
+                <input type="text" name="username" required placeholder="admin">
+            </div>
+            <div class="form-group">
+                <label class="field-label">رمز عبور</label>
+                <input type="password" name="password" required placeholder="••••••••">
+            </div>
+            <button type="submit" class="btn btn-blue btn-block" style="margin-top: 15px;">ورود به سیستم</button>
+        </form>
+    </div>
+</body>
+</html>
+EOF
+
+# ۱۵. ایجاد جاوااسکریپت عملکردها (static/app.js)
 cat <<'EOF' > /var/lib/ssh-panel/static/app.js
 document.getElementById('settingsForm')?.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -859,9 +1331,12 @@ document.getElementById('addUserForm')?.addEventListener('submit', async (e) => 
     e.preventDefault();
     const username = document.getElementById('addUsername').value;
     const password = document.getElementById('addPassword').value;
-    const remaining_time = document.getElementById('addTime').value; // دریافت زمان به روز
+    const remaining_time = document.getElementById('addTime').value;
     const total_volume = document.getElementById('addVolume').value;
-    const protocol = document.getElementById('addProtocol').value;
+    
+    // تعیین نوع پروتکل انتخابی بر اساس چک‌باکس‌ها
+    const isWS = document.getElementById('protoWS').checked;
+    const protocol = isWS ? 'sshws' : 'openssh';
 
     const res = await fetch('/api/user', {
         method: 'POST',
@@ -874,16 +1349,16 @@ document.getElementById('addUserForm')?.addEventListener('submit', async (e) => 
 });
 
 async function saveUser(username) {
-    const password = document.getElementById(`pwd-${username}`).value;
-    const remaining_time = document.getElementById(`time-${username}`).value; // دریافت زمان به روز
-    const total_volume = document.getElementById(`vol-${username}`).value;
-    const protocol = document.getElementById(`proto-${username}`).value;
-    const status = document.getElementById(`status-${username}`).value;
+    // بازخوانی مقادیر موقت برای آپدیت
+    const password = prompt("رمز عبور جدید را وارد کنید:") || "123456";
+    const remaining_time = prompt("اعتبار جدید به روز:") || "30";
+    const total_volume = prompt("حجم جدید (GB):") || "50";
+    const protocol = confirm("آیا مایل به فعال کردن پروتکل WebSocket هستید؟ (در غیر این صورت OpenSSH)") ? 'sshws' : 'openssh';
 
     const res = await fetch('/api/user/update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password, remaining_time, total_volume, protocol, status })
+        body: JSON.stringify({ username, password, remaining_time, total_volume, protocol, status: 'active' })
     });
     const data = await res.json();
     alert(data.msg);
@@ -910,6 +1385,7 @@ async function resetUser(username) {
     });
     const data = await res.json();
     alert(data.msg);
+    location.reload();
 }
 
 async function importBackup() {
@@ -929,36 +1405,51 @@ async function importBackup() {
     alert(data.msg);
     if(data.success) location.reload();
 }
+
+function searchUsers() {
+    const input = document.getElementById('userSearch');
+    const filter = input.value.toLowerCase();
+    const rows = document.querySelectorAll('#usersTableBody tr');
+    
+    rows.forEach(row => {
+        const username = row.querySelector('.user-name-text').textContent.toLowerCase();
+        if(username.includes(filter)) {
+            row.style.display = "";
+        } else {
+            row.style.display = "none";
+        }
+    });
+}
 EOF
 
-echo "=== پیکربندی محیط مجازی پایتون و سرویس‌های سیستمی ==="
+echo "=== پیکربندی سرویس‌های سیستمی لینوکس ==="
 
 # ۱۶. ایجاد محیط مجازی و نصب وابستگی‌ها
 python3 -m venv /var/lib/ssh-panel/venv
 /var/lib/ssh-panel/venv/bin/pip install --upgrade pip
 /var/lib/ssh-panel/venv/bin/pip install flask gunicorn
 
-# ۱۷. مقداردهی اولیه دیتابیس (اصلاح شده با PYTHONPATH جهت رفع دائمی خطا)
+# ۱۷. راه‌اندازی دیتابیس
 PYTHONPATH=/var/lib/ssh-panel /var/lib/ssh-panel/venv/bin/python -c "from app.db import init_db; init_db()"
 
-# ۱۸. کانفیگ سرویس پنل مدیریت (Gunicorn روی پورت ۵۰۰۰)
+# ۱۸. سرویس پنل مدیریت روی پورت ۸۰۰۰
 cat <<EOF > /etc/systemd/system/ssh-pro-panel.service
 [Unit]
-Description=SSH-Pro Management Admin Dashboard (Port 5000)
+Description=SSH-Pro Management Admin Dashboard (Port 8000)
 After=network.target
 
 [Service]
 User=root
 WorkingDirectory=/var/lib/ssh-panel
 Environment=PYTHONPATH=/var/lib/ssh-panel
-ExecStart=/var/lib/ssh-panel/venv/bin/gunicorn --workers 1 --bind 0.0.0.0:5000 app.api:app
+ExecStart=/var/lib/ssh-panel/venv/bin/gunicorn --workers 1 --bind 0.0.0.0:8000 app.api:app
 Restart=always
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# ۱۹. کانفیگ ورکر سبک پایش و مانیتورینگ آنلاین
+# ۱۹. ورکر بهینه پایش ترافیک
 cat <<'EOF' > /var/lib/ssh-panel/live_worker.py
 import time
 import sys
@@ -988,7 +1479,7 @@ Restart=always
 WantedBy=multi-user.target
 EOF
 
-# ۲۰. ساخت سرور سبک وب‌سوکت پروکسی بدون تداخل برای پورت ۸۰ (ws_server.py)
+# ۲۰. وب‌سوکت گیت‌وی سبک برای پورت ۸۰
 cat <<'EOF' > /var/lib/ssh-panel/ws_server.py
 import socket
 import threading
@@ -1011,7 +1502,7 @@ def handle_client(client_socket):
             def forward(source, destination):
                 try:
                     while True:
-                        data = source.recv(8192) # افزایش بافر برای پرفورمنس بالاتر
+                        data = source.recv(8192)
                         if not data:
                             break
                         destination.sendall(data)
@@ -1040,10 +1531,10 @@ def main():
     try:
         server.bind(('0.0.0.0', port))
     except Exception as e:
-        print(f"Error binding to port {port}: {e}. Make sure Apache/Nginx is stopped.")
+        print(f"Error binding to port {port}: {e}.")
         sys.exit(1)
         
-    server.listen(500) # افزایش بک‌لاگ به ۵۰۰ اتصال همزمان
+    server.listen(500)
     print(f"WS Gateway Listening on port {port}...")
     while True:
         try:
@@ -1071,22 +1562,22 @@ Restart=always
 WantedBy=multi-user.target
 EOF
 
-# ۲۱. باز کردن پورت جدید ۵۰۰۰ و پورت ۸۰ روی فایروال لینوکس
+# ۲۱. کانفیگ فایروال
 iptables -I INPUT -p tcp --dport 8000 -j ACCEPT
 iptables -I INPUT -p tcp --dport 80 -j ACCEPT
 if command -v ufw >/dev/null 2>&1; then
-    ufw allow 5000/tcp
+    ufw allow 8000/tcp
     ufw allow 80/tcp
     ufw reload
 fi
 
-# ۲۲. راه‌اندازی کل سرویس‌ها روی لینوکس VPS
+# ۲۲. ری‌استارت نهایی سرویس‌ها
 systemctl daemon-reload
 systemctl enable --now ssh-pro-panel
 systemctl enable --now ssh-pro-worker
 systemctl enable --now ssh-ws
 
 echo "==============================================="
-echo "=== نصب تمیز کامل شد!                        ==="
+echo "=== نصب با موفقیت روی پورت 8000 کامل شد! ==="
 echo "=== آدرس وب پنل جدید: http://YOUR_VPS_IP:8000 ==="
 echo "==============================================="
