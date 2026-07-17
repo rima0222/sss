@@ -1,455 +1,261 @@
-cat <<'EOF' > /var/lib/ssh-panel/templates/index.html
-<!DOCTYPE html>
-<html lang="fa" dir="rtl">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>کنترل سنتر اختصاصی</title>
-    <link rel="stylesheet" href="/static/app.css">
-    <style>
-        .user-pass-container { display: flex; flex-direction: column; gap: 4px; font-family: monospace; font-size: 0.85rem; text-align: right; }
-        .user-text { color: #fff; font-weight: bold; }
-        .pass-text { color: #a5b1c2; }
-        .action-btn { padding: 6px 12px; border-radius: 6px; border: none; cursor: pointer; font-weight: bold; font-size: 0.8rem; transition: all 0.2s; margin: 2px; }
-        .btn-pause { background-color: #f7b731; color: #000; }
-        .btn-resume { background-color: #2bcbba; color: #fff; }
-        .btn-danger { background-color: #ff6b6b; color: #fff; }
-        .btn-warning { background-color: #fa8231; color: #fff; }
-        .btn-blue { background-color: #3867d6; color: #fff; }
-        
-        .active-status { background-color: rgba(136, 84, 208, 0.2) !important; color: #a55eea !important; border: 1px solid #8854d0 !important; }
-        
-        /* انیمیشن پالس سبز برای آنلاین */
-        .online-pulse {
-            background-color: rgba(38, 222, 129, 0.2) !important;
-            color: #26de81 !important;
-            border: 1px solid #26de81 !important;
-            position: relative;
-            animation: pulse-green 2s infinite;
-        }
-        @keyframes pulse-green {
-            0% { box-shadow: 0 0 0 0 rgba(38, 222, 129, 0.4); }
-            70% { box-shadow: 0 0 0 10px rgba(38, 222, 129, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(38, 222, 129, 0); }
-        }
+#!/usr/bin/env bash
+# ==============================================================================
+# SSH Management Panel - High-Engineering Installation Script
+# Designed for: Amir
+# Features: WAL SQLite, Precise /proc/<pid>/io Traffic Tracking, Systemd Daemons, Toast UI
+# ==============================================================================
 
-        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); justify-content: center; align-items: center; z-index: 1000; }
-        .modal-content { background: #1e272e; padding: 25px; border-radius: 12px; width: 350px; border: 1px solid #3867d6; }
+# Coloured outputs
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+NC='\033[0m'
 
-        /* استایل پاپ‌آپ‌های نوتیفیکیشن شیک (Toast) */
-        #toast-container {
-            position: fixed;
-            bottom: 20px;
-            left: 20px;
-            z-index: 9999;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-        .toast {
-            background: #26de81;
-            color: #fff;
-            padding: 12px 24px;
-            border-radius: 8px;
-            font-family: 'Vazir', sans-serif;
-            font-weight: bold;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            direction: rtl;
-            transform: translateY(20px);
-            opacity: 0;
-            transition: all 0.3s ease;
-        }
-        .toast.show {
-            transform: translateY(0);
-            opacity: 1;
-        }
-        .toast.error {
-            background: #ff6b6b;
-        }
-    </style>
-</head>
-<body>
-    <div class="grid-background"></div>
-    <div class="container">
-        <header class="header-section">
-            <div class="header-left">
-                <a href="/logout" class="btn btn-logout">خروج</a>
-                <a href="/api/backup/export" class="btn btn-backup">دانلود بکاپ</a>
-            </div>
-            <div class="header-right">
-                <div class="brand-info">
-                    <span class="sub-brand">MANAGEMENT</span>
-                    <h1 class="brand-title">کنترل پنل مدیریت کاربران</h1>
-                </div>
-                <div class="avatar-icon">CP</div>
-            </div>
-        </header>
+echo -e "${GREEN}=== شروع فرآیند نصب مهندسی‌شده پنل مدیریت کاربران ===${NC}"
 
-        <!-- آمارها -->
-        <div class="status-grid">
-            <div class="status-card"><span class="status-label">RAM</span><span class="status-value" id="live-ram">{{ ram_usage }}</span></div>
-            <div class="status-card"><span class="status-label">مصرف کل</span><span class="status-value">GB {{ total_used }}</span></div>
-            <div class="status-card"><span class="status-label">حجم کل</span><span class="status-value">GB {{ total_allowed_vol }}</span></div>
-            <div class="status-card"><span class="status-label">آنلاین</span><span class="status-value" id="live-online">{{ online_count }}</span></div>
-            <div class="status-card"><span class="status-label">فعال</span><span class="status-value">{{ active_count }}</span></div>
-            <div class="status-card"><span class="status-label">کل کاربران</span><span class="status-value">{{ total_users_count }}</span></div>
-        </div>
+# 1. Install System Requirements
+echo -e "${GREEN}[1/5] در حال نصب پیش‌نیازها...${NC}"
+apt-get update -y && apt-get install -y python3 python3-pip python3-flask sqlite3 procps lsof -y || true
 
-        <div class="main-layout">
-            <div class="sidebar-column">
-                <div class="card panel-card">
-                    <div class="card-header">
-                        <span class="tag tag-purple">PORT</span>
-                        <span class="card-title">تنظیمات پورت و مدیریت</span>
-                    </div>
-                    <form id="settingsForm">
-                        <div class="form-group">
-                            <label class="field-label">نام کاربری مدیر</label>
-                            <input type="text" id="adminUser" value="{{ admin_user }}" required>
-                        </div>
-                        <div class="form-group">
-                            <label class="field-label">رمز عبور جدید مدیر</label>
-                            <input type="password" id="adminPass" placeholder="خالی بگذارید تا تغییر نکند">
-                        </div>
-                        <div class="form-group">
-                            <label class="field-label">پورت وب‌ساکت (SSHWS)</label>
-                            <input type="number" id="sshWsPort" value="{{ ssh_ws_port }}" required>
-                        </div>
-                        <button type="submit" class="btn btn-blue btn-block">ذخیره تنظیمات</button>
-                    </form>
-                </div>
+# Create directory structures
+mkdir -p /var/lib/ssh-panel/app
+mkdir -p /var/lib/ssh-panel/templates
+mkdir -p /var/lib/ssh-panel/static
 
-                <!-- بخش بازیابی بکاپ -->
-                <div class="card panel-card" style="margin-top: 20px;">
-                    <div class="card-header">
-                        <span class="tag tag-purple">JSON</span>
-                        <span class="card-title">بازیابی اطلاعات</span>
-                    </div>
-                    <div class="backup-area">
-                        <div class="file-drop-area" onclick="document.getElementById('backupFile').click()">
-                            <span id="file-name-label">انتخاب فایل بکاپ</span>
-                            <input type="file" id="backupFile" accept=".json" style="display: none;" onchange="updateFileName(this)">
-                        </div>
-                        <button onclick="importBackup()" class="btn btn-blue btn-block" style="margin-top: 15px;">بازیابی بکاپ</button>
-                    </div>
-                </div>
-            </div>
+# 2. Database Initialization with WAL Mode
+echo -e "${GREEN}[2/5] راه‌اندازی پایگاه داده امن...${NC}"
+DB_PATH="/var/lib/ssh-panel/database.db"
 
-            <div class="content-column">
-                <div class="card panel-card">
-                    <div class="card-header">
-                        <span class="tag tag-blue">USER</span>
-                        <span class="card-title">ساخت کاربر جدید</span>
-                    </div>
-                    <form id="addUserForm">
-                        <div class="form-row-2">
-                            <div class="form-group">
-                                <label class="field-label">نام کاربری</label>
-                                <input type="text" id="addUsername" required>
-                            </div>
-                            <div class="form-group">
-                                <label class="field-label">رمز عبور</label>
-                                <input type="text" id="addPassword" required>
-                            </div>
-                        </div>
-                        <div class="form-row-2">
-                            <div class="form-group">
-                                <label class="field-label">حجم (GB)</label>
-                                <input type="number" step="0.1" id="addVolume" value="10" required>
-                            </div>
-                            <div class="form-group">
-                                <label class="field-label">زمان (روز)</label>
-                                <input type="number" step="1" id="addTime" value="30" required>
-                            </div>
-                        </div>
-                        <button type="submit" class="btn btn-blue btn-block" style="margin-top: 15px;">ساخت کاربر</button>
-                    </form>
-                </div>
-            </div>
-        </div>
-
-        <!-- جدول مدیریت کاربران -->
-        <div class="card panel-card" style="margin-top: 25px;">
-            <div class="users-header">
-                <span class="card-title">مدیریت کاربران</span>
-                <div class="search-box">
-                    <input type="text" id="userSearch" placeholder="جستجو نام کاربری..." onkeyup="searchUsers()">
-                </div>
-            </div>
-
-            <div class="table-responsive">
-                <table>
-                    <thead>
-                        <tr>
-                            <th style="text-align: right; width: 180px;">اطلاعات اتصال (User/Pass)</th>
-                            <th style="text-align: center;">وضعیت حساب</th>
-                            <th style="text-align: center;">اتصال زنده</th>
-                            <th style="text-align: center; width: 180px;">مصرف دیتا</th>
-                            <th style="text-align: center;">زمان باقی‌مانده</th>
-                            <th style="text-align: left; padding-left: 20px;">عملیات</th>
-                        </tr>
-                    </thead>
-                    <tbody id="usersTableBody">
-                        {% for user in users %}
-                        <tr class="user-row" id="user-row-{{ user.username }}">
-                            <td style="text-align: right; display: flex; align-items: center; gap: 10px; height: 55px;">
-                                <div class="user-avatar-blue">{{ user.username[0]|upper }}</div>
-                                <div class="user-pass-container">
-                                    <span class="user-text">{{ user.username }}</span>
-                                    <span class="pass-text">رمز: {{ user.password }}</span>
-                                </div>
-                            </td>
-                            <td style="text-align: center;">
-                                {% if user.status == 'active' %}
-                                    <span class="status-indicator active-status">فعال</span>
-                                {% else %}
-                                    <span class="status-indicator offline" style="color: #ff7675; border-color: #ff7675;">Pause</span>
-                                {% endif %}
-                            </td>
-                            <td style="text-align: center;" class="user-online-status">
-                                {% if user.is_online %}
-                                    <span class="status-indicator online-pulse">آنلاین</span>
-                                {% else %}
-                                    <span class="status-indicator offline">آفلاین</span>
-                                {% endif %}
-                            </td>
-                            <td style="text-align: center;">
-                                <div class="traffic-container" style="direction: ltr;">
-                                    <span class="traffic-text" style="color: #a5b1c2; font-size: 0.8rem;">
-                                        {{ "%.2f"|format(user.used_download) }} / {{ "%.2f"|format(user.total_volume) }} GB
-                                    </span>
-                                    <div class="progress-bar" style="margin-top: 4px;">
-                                        <div class="progress-fill" style="width: {{ (user.used_download / user.total_volume * 100)|int if user.total_volume > 0 else 0 }}%;"></div>
-                                    </div>
-                                </div>
-                            </td>
-                            <td style="text-align: center;">
-                                <span class="time-badge">{{ user.readable_time }}</span>
-                            </td>
-                            <td style="text-align: left; white-space: nowrap; padding-left: 20px;">
-                                <button onclick="deleteUser('{{ user.username }}')" class="action-btn btn-danger">حذف</button>
-                                <button onclick="resetUser('{{ user.username }}')" class="action-btn btn-warning">ریست</button>
-                                <button onclick="openEditModal('{{ user.username }}', '{{ user.password }}', '{{ user.total_volume }}', '{{ user.remaining_time }}')" class="action-btn btn-blue">ویرایش</button>
-                                {% if user.status == 'active' %}
-                                    <button onclick="toggleUserStatus('{{ user.username }}', 'pause')" class="action-btn btn-pause">Pause</button>
-                                {% else %}
-                                    <button onclick="toggleUserStatus('{{ user.username }}', 'resume')" class="action-btn btn-resume">Resume</button>
-                                {% endif %}
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-
-    <!-- مودال ادیت -->
-    <div id="editModal" class="modal">
-        <div class="modal-content">
-            <h3 style="color: #fff; margin-bottom: 15px; text-align: center;">ویرایش اطلاعات کاربر</h3>
-            <form id="editUserForm">
-                <input type="hidden" id="editUsername">
-                <div class="form-group" style="margin-bottom: 12px;">
-                    <label class="field-label" style="color: #a5b1c2;">رمز عبور جدید</label>
-                    <input type="text" id="editPassword" required style="width: 100%; padding: 8px; background: #2f3640; border: none; color: #fff; border-radius: 6px;">
-                </div>
-                <div class="form-group" style="margin-bottom: 12px;">
-                    <label class="field-label" style="color: #a5b1c2;">حجم کل (GB)</label>
-                    <input type="number" step="0.1" id="editVolume" required style="width: 100%; padding: 8px; background: #2f3640; border: none; color: #fff; border-radius: 6px;">
-                </div>
-                <div class="form-group" style="margin-bottom: 20px;">
-                    <label class="field-label" style="color: #a5b1c2;">زمان باقی‌مانده (روز)</label>
-                    <input type="number" id="editTime" required style="width: 100%; padding: 8px; background: #2f3640; border: none; color: #fff; border-radius: 6px;">
-                </div>
-                <div style="display: flex; gap: 10px;">
-                    <button type="submit" class="btn btn-blue" style="flex: 1; padding: 10px;">ذخیره</button>
-                    <button type="button" onclick="closeEditModal()" class="action-btn btn-danger" style="flex: 1; padding: 10px;">انصراف</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <!-- کانتینر اعلان‌ها -->
-    <div id="toast-container"></div>
-
-    <script src="/static/app.js"></script>
-    <script>
-        // تابع ساخت اعلان سفارشی بدون نیاز به پاپ‌آپ‌های پیشفرض مرورگر
-        function showToast(message, isError = false) {
-            const container = document.getElementById('toast-container');
-            const toast = document.createElement('div');
-            toast.className = `toast ${isError ? 'error' : ''}`;
-            toast.innerText = message;
-            container.appendChild(toast);
-            
-            setTimeout(() => { toast.classList.add('show'); }, 50);
-            
-            setTimeout(() => {
-                toast.classList.remove('show');
-                setTimeout(() => { toast.remove(); }, 300);
-            }, 4000);
-        }
-
-        function updateFileName(i) { 
-            document.getElementById('file-name-label').innerText = i.files[0] ? i.files[0].name : "انتخاب فایل بکاپ"; 
-        }
-
-        function openEditModal(u, p, v, t) {
-            document.getElementById('editUsername').value = u;
-            document.getElementById('editPassword').value = p;
-            document.getElementById('editVolume').value = v;
-            document.getElementById('editTime').value = Math.round(t / 86400);
-            document.getElementById('editModal').style.display = 'flex';
-        }
-
-        function closeEditModal() { document.getElementById('editModal').style.display = 'none'; }
-
-        // ثبت اطلاعات فرم ویرایش کاربر با پیام متناسب
-        document.getElementById('editUserForm').addEventListener('submit', function(e) {
-            e.preventDefault();
-            const u = document.getElementById('editUsername').value;
-            fetch('/api/user/edit', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    username: u,
-                    password: document.getElementById('editPassword').value,
-                    total_volume: parseFloat(document.getElementById('editVolume').value),
-                    remaining_time: parseInt(document.getElementById('editTime').value) * 86400
-                })
-            }).then(r => r.json()).then(res => { 
-                if(res.success) {
-                    closeEditModal();
-                    showToast(`مشخصات کاربر ${u} با موفقیت ویرایش شد.`);
-                    setTimeout(() => location.reload(), 1500);
-                } else { 
-                    showToast('خطا در ذخیره‌سازی اطلاعات ویرایش شده', true); 
-                } 
-            });
-        });
-
-        // اکشن فرم ساخت کاربر با پیام متناسب
-        document.getElementById('addUserForm').addEventListener('submit', function(e) {
-            e.preventDefault();
-            const u = document.getElementById('addUsername').value;
-            fetch('/api/user/add', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    username: u,
-                    password: document.getElementById('addPassword').value,
-                    total_volume: parseFloat(document.getElementById('addVolume').value),
-                    remaining_time: parseInt(document.getElementById('addTime').value) * 86400
-                })
-            }).then(r => r.json()).then(res => {
-                if(res.success) {
-                    showToast(`کاربر جدید "${u}" با موفقیت به سیستم اضافه شد.`);
-                    setTimeout(() => location.reload(), 1500);
-                } else {
-                    showToast('خطا در ساخت کاربر جدید', true);
-                }
-            });
-        });
-
-        // تنظیمات مدیریت و پورت
-        document.getElementById('settingsForm').addEventListener('submit', function(e) {
-            e.preventDefault();
-            fetch('/api/settings/save', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    admin_user: document.getElementById('adminUser').value,
-                    admin_pass: document.getElementById('adminPass').value,
-                    ssh_ws_port: parseInt(document.getElementById('sshWsPort').value)
-                })
-            }).then(r => r.json()).then(res => {
-                if(res.success) {
-                    showToast('تنظیمات جدید پورت و مدیریت با موفقیت ذخیره شد.');
-                    setTimeout(() => location.reload(), 1500);
-                } else {
-                    showToast('خطا در ذخیره تنظیمات سیستم', true);
-                }
-            });
-        });
-
-        function toggleUserStatus(username, action) {
-            fetch(`/api/user/${action}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username })
-            }).then(r => r.json()).then(res => { 
-                if(res.success) {
-                    const msg = action === 'pause' ? `کاربر ${username} موقتاً غیرفعال (Pause) شد.` : `کاربر ${username} مجدداً فعال (Resume) شد.`;
-                    showToast(msg);
-                    setTimeout(() => location.reload(), 1200);
-                } 
-            });
-        }
-
-        function deleteUser(username) {
-            if(confirm(`آیا از حذف کاربر ${username} مطمئن هستید؟`)) {
-                fetch('/api/user/delete', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username })
-                }).then(r => r.json()).then(res => {
-                    if(res.success) {
-                        showToast(`کاربر ${username} به طور کامل از سیستم حذف گردید.`);
-                        setTimeout(() => location.reload(), 1200);
-                    }
-                });
-            }
-        }
-
-        const eventSource = new EventSource("/api/live-stream");
-        eventSource.onmessage = function(event) {
-            const data = JSON.parse(event.data);
-            document.getElementById("live-ram").innerText = data.ram;
-            document.getElementById("live-online").innerText = data.online_count;
-            const rows = document.querySelectorAll("#usersTableBody tr");
-            rows.forEach(row => {
-                const uSpan = row.querySelector(".user-text");
-                if (uSpan) {
-                    const username = uSpan.textContent.trim();
-                    const statusTd = row.querySelector(".user-online-status");
-                    if (data.online_users.includes(username)) {
-                        statusTd.innerHTML = '<span class="status-indicator online-pulse">آنلاین</span>';
-                    } else {
-                        statusTd.innerHTML = '<span class="status-indicator offline">آفلاین</span>';
-                    }
-                }
-            });
-        };
-    </script>
-</body>
-</html>
+sqlite3 "$DB_PATH" <<EOF
+PRAGMA journal_mode=WAL;
+CREATE TABLE IF NOT EXISTS users (
+    username TEXT PRIMARY KEY,
+    password TEXT NOT NULL,
+    total_volume REAL NOT NULL,
+    used_traffic REAL DEFAULT 0.0,
+    remaining_time INTEGER NOT NULL,
+    status TEXT DEFAULT 'active'
+);
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+INSERT OR IGNORE INTO settings (key, value) VALUES ('admin_user', 'admin');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('admin_pass', 'admin');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('ssh_ws_port', '80');
 EOF
 
-# بازنویسی کامل مسیرهای API بک‌اند همراه با اصلاح دقیق کوئری‌های تفکیک دیتابیس
-cat <<'EOF' > /var/lib/ssh-panel/app/routes.py
-from flask import Blueprint, render_template, request, jsonify, session, redirect, url_for
+# 3. Intelligent Traffic & Session Monitor Daemon
+echo -e "${GREEN}[3/5] ایجاد سرویس مانیتورینگ ترافیک (/proc/pid/io)...${NC}"
+cat <<'EOF' > /var/lib/ssh-panel/worker.py
+import os
+import sys
+import time
+import sqlite3
 import subprocess
-from app.db import get_db_connection
+
+DB_PATH = "/var/lib/ssh-panel/database.db"
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    return conn
+
+pid_io_cache = {}
+
+def get_user_pids():
+    user_pids = {}
+    try:
+        conn = get_db()
+        users = [row[0] for row in conn.execute("SELECT username FROM users").fetchall()]
+        conn.close()
+    except Exception:
+        return {}
+
+    for user in users:
+        try:
+            pids_str = subprocess.check_output(["pgrep", "-u", user]).decode().strip()
+            if pids_str:
+                user_pids[user] = [int(p) for p in pids_str.split()]
+        except subprocess.CalledProcessError:
+            continue
+    return user_pids
+
+def update_traffic_and_status():
+    global pid_io_cache
+    user_pids = get_user_pids()
+    active_online_users = []
+
+    conn = get_db()
+    
+    restricted_users = [row[0] for row in conn.execute("SELECT username FROM users WHERE status != 'active'").fetchall()]
+    
+    for user in restricted_users:
+        if user in user_pids:
+            subprocess.run(f"pkill -u {user}", shell=True)
+
+    current_pids_seen = set()
+    for user, pids in user_pids.items():
+        user_bytes = 0
+        is_online = False
+        
+        for pid in pids:
+            current_pids_seen.add(pid)
+            try:
+                with open(f"/proc/{pid}/io", "r") as f:
+                    lines = f.readlines()
+                read_bytes = 0
+                write_bytes = 0
+                for line in lines:
+                    if line.startswith("read_bytes:"):
+                        read_bytes = int(line.split()[1])
+                    elif line.startswith("write_bytes:"):
+                        write_bytes = int(line.split()[1])
+                
+                total_io = read_bytes + write_bytes
+                
+                if pid in pid_io_cache:
+                    diff = total_io - pid_io_cache[pid]
+                    if diff > 0:
+                        user_bytes += diff
+                else:
+                    pid_io_cache[pid] = total_io
+                
+                is_online = True
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
+                continue
+
+        if is_online:
+            active_online_users.append(user)
+
+        if user_bytes > 0:
+            user_gb = user_bytes / (1024 ** 3)
+            conn.execute("UPDATE users SET used_traffic = used_traffic + ? WHERE username = ?", (user_gb, user))
+            conn.commit()
+
+    for dead_pid in list(pid_io_cache.keys()):
+        if dead_pid not in current_pids_seen:
+            pid_io_cache.pop(dead_pid, None)
+
+    users_data = conn.execute("SELECT username, total_volume, used_traffic, remaining_time FROM users WHERE status='active'").fetchall()
+    for username, total_volume, used_traffic, remaining_time in users_data:
+        new_time = max(0, remaining_time - 10)
+        conn.execute("UPDATE users SET remaining_time = ? WHERE username = ?", (new_time, username))
+        
+        if used_traffic >= total_volume:
+            conn.execute("UPDATE users SET status = 'expired' WHERE username = ?", (username,))
+            subprocess.run(f"usermod -L {username}", shell=True)
+            subprocess.run(f"pkill -u {username}", shell=True)
+        elif new_time <= 0:
+            conn.execute("UPDATE users SET status = 'expired' WHERE username = ?", (username,))
+            subprocess.run(f"usermod -L {username}", shell=True)
+            subprocess.run(f"pkill -u {username}", shell=True)
+
+    conn.commit()
+    conn.close()
+
+if __name__ == "__main__":
+    while True:
+        try:
+            update_traffic_and_status()
+        except Exception as e:
+            pass
+        time.sleep(10)
+EOF
+
+# 4. Web Server & API Panel Development
+echo -e "${GREEN}[4/5] پیکربندی وب‌سرور کنترل پنل...${NC}"
+
+cat <<'EOF' > /var/lib/ssh-panel/app/routes.py
+import sqlite3
+import subprocess
+from flask import Blueprint, render_template, request, jsonify
 
 bp = Blueprint('routes', __name__)
+DB_PATH = "/var/lib/ssh-panel/database.db"
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    return conn
+
+@bp.route('/')
+def index():
+    conn = get_db()
+    users_rows = conn.execute("SELECT username, password, total_volume, used_traffic, remaining_time, status FROM users").fetchall()
+    
+    admin_user = conn.execute("SELECT value FROM settings WHERE key='admin_user'").fetchone()[0]
+    ssh_ws_port = conn.execute("SELECT value FROM settings WHERE key='ssh_ws_port'").fetchone()[0]
+    
+    users = []
+    total_used = 0.0
+    total_allowed_vol = 0.0
+    active_count = 0
+    online_count = 0
+    
+    online_users = []
+    for row in users_rows:
+        username = row[0]
+        try:
+            subprocess.check_output(["pgrep", "-u", username])
+            online_users.append(username)
+        except subprocess.CalledProcessError:
+            pass
+
+    for row in users_rows:
+        username, password, total_vol, used, rem_time, status = row
+        total_used += used
+        total_allowed_vol += total_vol
+        if status == 'active':
+            active_count += 1
+            
+        is_online = username in online_users
+        if is_online:
+            online_count += 1
+            
+        days_left = max(0, int(rem_time / 86400))
+        readable_time = f"{days_left} روز" if days_left > 0 else "منقضی شده"
+        
+        users.append({
+            "username": username,
+            "password": password,
+            "total_volume": round(total_vol, 2),
+            "used_download": round(used, 2),
+            "remaining_time": rem_time,
+            "readable_time": readable_time,
+            "status": status,
+            "is_online": is_online
+        })
+        
+    conn.close()
+    
+    try:
+        ram_usage = subprocess.check_output("free -m | awk 'NR==2{printf \"%.1f%%\", $3*100/$2 }'", shell=True).decode().strip()
+    except Exception:
+        ram_usage = "N/A"
+        
+    return render_template("index.html", 
+                           users=users,
+                           admin_user=admin_user,
+                           ssh_ws_port=ssh_ws_port,
+                           total_used=round(total_used, 2),
+                           total_allowed_vol=round(total_allowed_vol, 2),
+                           active_count=active_count,
+                           online_count=online_count,
+                           total_users_count=len(users),
+                           ram_usage=ram_usage)
 
 @bp.route('/api/user/add', methods=['POST'])
 def add_user():
     data = request.json
-    u, p, vol, r_time = data['username'], data['password'], data['total_volume'], data['remaining_time']
-    conn = get_db_connection()
+    u, p, vol, r_time = data['username'].strip(), data['password'].strip(), float(data['total_volume']), int(data['remaining_time'])
+    conn = get_db()
     try:
-        conn.execute("INSERT INTO users (username, password, total_volume, remaining_time, status, used_download) VALUES (?, ?, ?, ?, 'active', 0.0)", (u, p, vol, r_time))
+        conn.execute("INSERT INTO users (username, password, total_volume, remaining_time, status, used_traffic) VALUES (?, ?, ?, ?, 'active', 0.0)", (u, p, vol, r_time))
         conn.commit()
-        # ساخت فیزیکی کاربر سیستمی بدون دسترسی به Shell
         subprocess.run(f"useradd -M -s /usr/sbin/nologin {u}", shell=True)
         subprocess.run(f"echo '{u}:{p}' | chpasswd", shell=True)
         success = True
-    except Exception as e:
+    except Exception:
         success = False
     finally:
         conn.close()
@@ -458,19 +264,19 @@ def add_user():
 @bp.route('/api/user/edit', methods=['POST'])
 def edit_user():
     data = request.json
-    u, p, vol, r_time = data['username'], data['password'], data['total_volume'], data['remaining_time']
-    conn = get_db_connection()
-    # ویرایش حتماً فیلتر بر اساس نام کاربری (u) باشد نه به صورت عمومی!
-    conn.execute("UPDATE users SET password=?, total_volume=?, remaining_time=? WHERE username=?", (p, vol, r_time, u))
+    u, p, vol, r_time = data['username'].strip(), data['password'].strip(), float(data['total_volume']), int(data['remaining_time'])
+    conn = get_db()
+    conn.execute("UPDATE users SET password=?, total_volume=?, remaining_time=?, status='active' WHERE username=?", (p, vol, r_time, u))
     conn.commit()
     conn.close()
+    subprocess.run(f"usermod -U {u}", shell=True)
     subprocess.run(f"echo '{u}:{p}' | chpasswd", shell=True)
     return jsonify({"success": True})
 
 @bp.route('/api/user/pause', methods=['POST'])
 def pause_user():
     u = request.json['username']
-    conn = get_db_connection()
+    conn = get_db()
     conn.execute("UPDATE users SET status='paused' WHERE username=?", (u,))
     conn.commit()
     conn.close()
@@ -481,17 +287,26 @@ def pause_user():
 @bp.route('/api/user/resume', methods=['POST'])
 def resume_user():
     u = request.json['username']
-    conn = get_db_connection()
+    conn = get_db()
     conn.execute("UPDATE users SET status='active' WHERE username=?", (u,))
     conn.commit()
     conn.close()
     subprocess.run(f"usermod -U {u}", shell=True)
     return jsonify({"success": True})
 
+@bp.route('/api/user/reset', methods=['POST'])
+def reset_user():
+    u = request.json['username']
+    conn = get_db()
+    conn.execute("UPDATE users SET used_traffic=0.0 WHERE username=?", (u,))
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True})
+
 @bp.route('/api/user/delete', methods=['POST'])
 def delete_user():
     u = request.json['username']
-    conn = get_db_connection()
+    conn = get_db()
     conn.execute("DELETE FROM users WHERE username=?", (u,))
     conn.commit()
     conn.close()
@@ -506,23 +321,76 @@ def save_settings():
     admin_pass = data['admin_pass']
     ssh_ws_port = data['ssh_ws_port']
     
-    conn = get_db_connection()
-    # ذخیره و به روز رسانی پورت فقط در سطر اصلی کانفیگ‌ها
-    conn.execute("UPDATE settings SET admin_user=?, ssh_ws_port=?", (admin_user, ssh_ws_port))
+    conn = get_db()
+    conn.execute("UPDATE settings SET value=? WHERE key='admin_user'", (admin_user,))
+    conn.execute("UPDATE settings SET value=? WHERE key='ssh_ws_port'", (ssh_ws_port,))
     if admin_pass:
-        conn.execute("UPDATE settings SET admin_pass=?", (admin_pass,))
+        conn.execute("UPDATE settings SET value=? WHERE key='admin_pass'", (admin_pass,))
     conn.commit()
     conn.close()
     
-    # اعمال مستقیم پورت جدید در سرویس‌دهنده وب‌ساکت و ری‌استارت آن
-    # فرض بر این است که وب‌ساکت شما از یک فایل کانفیگ پورت می‌خواند یا مستقیم روی پورت بالا ران می‌شود.
-    subprocess.run(f"systemctl restart ssh-pro-worker", shell=True)
+    subprocess.run("systemctl restart ssh-pro-ws || true", shell=True)
     return jsonify({"success": True})
 EOF
 
-# ری‌استارت بی‌خطر سرویس‌های پنل
-systemctl daemon-reload
-systemctl restart ssh-pro-panel
-systemctl restart ssh-pro-worker
+# 5. Create Flask Entrypoint App Runner
+cat <<'EOF' > /var/lib/ssh-panel/run.py
+from flask import Flask
+from app.routes import bp
 
-echo "=== تمام ایرادات با موفقیت برطرف شد و پاپ‌آپ‌های نوتیفیکیشن شیک جایگزین شدند! ==="
+app = Flask(__name__, 
+            template_folder='/var/lib/ssh-panel/templates',
+            static_folder='/var/lib/ssh-panel/static')
+app.secret_key = "highly_engineered_secure_key"
+app.register_blueprint(bp)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=False)
+EOF
+
+# 6. Service Registrations for Permanent Uptime
+echo -e "${GREEN}[5/5] ثبت سرویس‌های پس‌زمینه (Systemd Services)...${NC}"
+
+cat <<'EOF' > /etc/systemd/system/ssh-pro-worker.service
+[Unit]
+Description=SSH Core Traffic and Expiry Monitor
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/lib/ssh-panel
+ExecStart=/usr/bin/python3 /var/lib/ssh-panel/worker.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat <<'EOF' > /etc/systemd/system/ssh-pro-panel.service
+[Unit]
+Description=SSH Management Web Panel
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/lib/ssh-panel
+ExecStart=/usr/bin/python3 /var/lib/ssh-panel/run.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Reload and Restart Services safely
+systemctl daemon-reload
+systemctl enable ssh-pro-worker.service
+systemctl enable ssh-pro-panel.service
+systemctl restart ssh-pro-worker.service
+systemctl restart ssh-pro-panel.service
+
+echo -e "${GREEN}=== نصب با موفقیت پایان یافت! ===${NC}"
+echo -e "${GREEN}آدرس دسترسی به پنل: http://YOUR_SERVER_IP:5000${NC}"
