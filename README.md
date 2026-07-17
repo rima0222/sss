@@ -1,0 +1,12 @@
+# 🛡️ SSH-Pro Management Panel
+
+یک پنل تحت وب سبک، سریع و امن برای مدیریت آسان کاربران SSH و WebSocket با قابلیت مانیتورینگ آنلاین حجم مصرفی دانلود و پایش ثانیه‌ای اتصال.
+
+---
+
+## ⚡ نصب سریع و آسان (تک‌خطی)
+
+برای نصب کامل پنل، گیت‌وی وب‌سوکت و مانیتورینگ خودکار روی سرور مجازی (VPS) خود، دستور زیر را به صورت کامل در ترمینال کپی و اجرا کنید:
+
+```bash
+bash <(curl -Ls [https://raw.githubusercontent.com/rima0222/sss/main/install.sh](https://raw.githubusercontent.com/rima0222/sss/main/install.sh))
