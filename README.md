@@ -9,4 +9,4 @@
 برای نصب کامل پنل، گیت‌وی وب‌سوکت و مانیتورینگ خودکار روی سرور مجازی (VPS) خود، دستور زیر را به صورت کامل در ترمینال کپی و اجرا کنید:
 
 ```bash
-bash <(curl -Ls [https://raw.githubusercontent.com/rima0222/sss/main/install.sh](https://raw.githubusercontent.com/rima0222/sss/main/install.sh))
+bash <(curl -Ls [https://raw.githubusercontent.com/rima0222/sss/main/install.sh])
