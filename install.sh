@@ -7,12 +7,12 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 echo "=================================================="
-echo "  در حال نصب پنل مدیریت SSH-WS بهینه و پیشرفته..."
+echo "  در حال نصب و بروزرسانی پنل پیشرفته و بهینه SSH-WS..."
 echo "=================================================="
 
 # آپدیت مخازن و نصب پیش‌نیازها
 apt update -y
-apt install -y python3 python3-pip python3-venv sqlite3 git curl net-tools
+apt install -y python3 python3-pip python3-venv sqlite3 git curl net-tools ufw
 
 # ایجاد دایرکتوری پروژه
 mkdir -p /root/ssh-panel
@@ -26,7 +26,7 @@ source venv/bin/activate
 pip install --upgrade pip
 pip install fastapi uvicorn websockets jinja2 python-multipart
 
-# ۱. ایجاد دیتابیس SQLite
+# ۱. ایجاد و بروزرسانی ساختار دیتابیس SQLite
 sqlite3 /root/users.db <<EOF
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,7 +47,7 @@ INSERT OR IGNORE INTO settings (key, value) VALUES ('admin_password', 'admin');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('ws_port', '80');
 EOF
 
-# ۲. ساخت فایل فرانت‌اند (HTML/CSS/JS) با طراحی دقیق تم دارک مشابه تصویر
+# ۲. ساخت فایل فرانت‌اند (HTML/CSS/JS) دارک و بهینه
 mkdir -p templates
 cat << 'EOF' > templates/index.html
 <!DOCTYPE html>
@@ -267,41 +267,73 @@ cat << 'EOF' > templates/index.html
 
     <script>
         async function fetchStatsAndUsers() {
-            const res = await fetch('/api/data');
-            const data = await res.json();
-            
-            // به روز رسانی آمار
-            document.getElementById('stat-total').innerText = data.stats.total;
-            document.getElementById('stat-active').innerText = data.stats.active;
-            document.getElementById('stat-online').innerText = data.stats.online;
-            document.getElementById('stat-total-volume').innerText = data.stats.total_volume.toFixed(1);
-            document.getElementById('stat-used-volume').innerText = data.stats.used_volume.toFixed(2);
-
-            // به روز رسانی لیست کاربران
-            const tbody = document.getElementById('users-table-body');
-            tbody.innerHTML = '';
-            data.users.forEach(u => {
-                const statusBadge = u.status === 'active' ? '<span class="badge bg-success">فعال</span>' : '<span class="badge bg-danger">مسدود</span>';
-                const onlineBadge = u.is_online ? '<span class="badge bg-warning text-dark">آنلاین</span>' : `<span class="text-muted small">${u.last_online}</span>`;
+            try {
+                const res = await fetch('/api/data');
+                const data = await res.json();
                 
-                tbody.innerHTML += `
-                    <tr>
-                        <td><strong>${u.username}</strong><br><span class="text-muted small">رمز: ${u.password}</span></td>
-                        <td>${statusBadge}</td>
-                        <td>${onlineBadge}</td>
-                        <td><div class="progress" style="height: 6px; background-color:#1f2937;"><div class="progress-bar" style="width: ${(u.volume_used/u.volume_limit)*100}%"></div></div><small>${u.volume_used.toFixed(2)} / ${u.volume_limit} GB</small></td>
-                        <td>${u.days_left} روز</td>
-                        <td>
-                            <button class="btn btn-sm btn-danger me-1" onclick="deleteUser('${u.username}')">حذف</button>
-                            <button class="btn btn-sm btn-warning me-1" onclick="toggleUser('${u.username}')">${u.status === 'active' ? 'Pause' : 'Active'}</button>
-                            <button class="btn btn-sm btn-info" onclick="resetTraffic('${u.username}')">ریست</button>
-                        </td>
-                    </tr>
-                `;
-            });
+                // به روز رسانی کارت‌های آمار بالای صفحه
+                document.getElementById('stat-total').innerText = data.stats.total;
+                document.getElementById('stat-active').innerText = data.stats.active;
+                document.getElementById('stat-online').innerText = data.stats.online;
+                document.getElementById('stat-total-volume').innerText = data.stats.total_volume.toFixed(1);
+                document.getElementById('stat-used-volume').innerText = data.stats.used_volume.toFixed(3);
+
+                // به روز رسانی تنظیمات لود شده در فرم
+                if (data.settings) {
+                    document.getElementById('admin-user').value = data.settings.admin_username;
+                    document.getElementById('ws-port').value = data.settings.ws_port;
+                }
+
+                // به روز رسانی لیست کاربران با مصرف و ثانیه‌شمار زنده
+                const tbody = document.getElementById('users-table-body');
+                tbody.innerHTML = '';
+                data.users.forEach(u => {
+                    const statusBadge = u.status === 'active' ? '<span class="badge bg-success">فعال</span>' : '<span class="badge bg-danger">مسدود</span>';
+                    const onlineBadge = u.is_online ? '<span class="badge bg-warning text-dark">● آنلاین</span>' : `<span class="text-muted small">${u.last_online}</span>`;
+                    const percent = Math.min((u.volume_used / u.volume_limit) * 100, 100);
+                    
+                    tbody.innerHTML += `
+                        <tr>
+                            <td><strong>${u.username}</strong><br><span class="text-muted small">رمز: ${u.password}</span></td>
+                            <td>${statusBadge}</td>
+                            <td>${onlineBadge}</td>
+                            <td>
+                                <div class="progress" style="height: 6px; background-color:#1f2937;">
+                                    <div class="progress-bar" style="width: ${percent}%"></div>
+                                </div>
+                                <small>${u.volume_used.toFixed(4)} / ${u.volume_limit} GB</small>
+                            </td>
+                            <td>${u.days_left} روز</td>
+                            <td>
+                                <button class="btn btn-sm btn-danger me-1" onclick="deleteUser('${u.username}')">حذف</button>
+                                <button class="btn btn-sm btn-warning me-1" onclick="toggleUser('${u.username}')">${u.status === 'active' ? 'Pause' : 'Active'}</button>
+                                <button class="btn btn-sm btn-info" onclick="resetTraffic('${u.username}')">ریست</button>
+                            </td>
+                        </tr>
+                    `;
+                });
+            } catch (err) {
+                console.error("خطا در برقراری ارتباط با سرور:", err);
+            }
         }
 
-        // توابع عملیاتی دکمه‌ها
+        // ذخیره تغییرات پورت و مشخصات ادمین
+        document.getElementById('settings-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const admin_username = document.getElementById('admin-user').value;
+            const admin_password = document.getElementById('admin-pass').value;
+            const ws_port = document.getElementById('ws-port').value;
+
+            const res = await fetch('/api/settings', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({admin_username, admin_password, ws_port})
+            });
+            const result = await res.json();
+            alert(result.detail || "تنظیمات با موفقیت ذخیره و پورت جدید اعمال شد!");
+            fetchStatsAndUsers();
+        });
+
         async function deleteUser(username) {
             if(confirm(`آیا از حذف کاربر ${username} مطمئن هستید؟`)) {
                 await fetch(`/api/user/delete/${username}`, {method: 'POST'});
@@ -337,23 +369,23 @@ cat << 'EOF' > templates/index.html
             window.location.href = '/api/backup';
         }
 
-        // اجرای خودکار دریافت اطلاعات در فواصل زمانی کم جهت نمایش آنلاین بودن لحظه‌ای
+        // مانیتورینگ کاملاً زنده هر ۳ ثانیه یک بار بدون بلاک شدن مرورگر یا سرور
         fetchStatsAndUsers();
-        setInterval(fetchStatsAndUsers, 4000);
+        setInterval(fetchStatsAndUsers, 3000);
     </script>
 </body>
 </html>
 EOF
 
-# ۳. ساخت بک‌اند پایتون (FastAPI + Websocket SSH-WS) در یک فایل بهینه
+# ۳. ایجاد اسکریپت پایتون اصلاح‌شده با پورت داینامیک فایروال و بافر کش ترافیک
 cat << 'EOF' > main.py
 import asyncio
 import sqlite3
 import os
-import shutil
+import threading
 from datetime import datetime, timedelta
-from fastapi import FastAPI, Request, HTTPException, Depends
-from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import websockets
@@ -363,19 +395,145 @@ templates = Jinja2Templates(directory="templates")
 
 DB_PATH = "/root/users.db"
 
-# ذخیره‌سازی وضعیت کاربران آنلاین فعال در وب‌ساکت جهت نظارت بهینه
+# حافظه موقت (رم) برای انباشت ترافیک و مانیتورینگ کانکشن‌های آنلاین زنده
 active_ws_connections = {}
+traffic_buffer = {}  # ساختار: {username: float_GB_used}
+buffer_lock = threading.Lock()
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
+# مدل‌های ارسالی فرم‌ها
 class UserCreate(BaseModel):
     username: str
     password: str
     limit: float
     days: int
+
+class SettingsUpdate(BaseModel):
+    admin_username: str
+    admin_password: str
+    ws_port: str
+
+# وظیفه پس‌زمینه همگام‌سازی ترافیک موقت حافظه با دیتابیس (هر ۵ ثانیه یک بار جهت بهینه‌سازی دیسک)
+async def flush_traffic_buffer_loop():
+    while True:
+        await asyncio.sleep(5)
+        with buffer_lock:
+            if not traffic_buffer:
+                continue
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            for username, gb_used in list(traffic_buffer.items()):
+                if gb_used > 0:
+                    cursor.execute(
+                        "UPDATE users SET volume_used = volume_used + ? WHERE username = ?",
+                        (gb_used, username)
+                    )
+                    traffic_buffer[username] = 0.0
+            conn.commit()
+            conn.close()
+
+# هندلر بهینه انتقال ترافیک وب‌ساکت به SSH روی لوکال‌هاست
+async def ssh_ws_handler(websocket, path):
+    username = "unknown"
+    path_parts = path.strip("/").split("/")
+    if len(path_parts) > 0 and path_parts[0]:
+        username = path_parts[0]
+        
+    active_ws_connections[username] = datetime.now()
+    
+    try:
+        # اتصال مستقیم به پورت لوکال SSH
+        reader, writer = await asyncio.open_connection('127.0.0.1', 22)
+        
+        async def ws_to_ssh():
+            try:
+                async for message in websocket:
+                    writer.write(message)
+                    await writer.drain()
+            except Exception:
+                pass
+            finally:
+                writer.close()
+
+        async def ssh_to_ws():
+            try:
+                while True:
+                    data = await reader.read(8192) # بافر بزرگتر جهت پینگ پایین‌تر و سرعت انتقال بالاتر
+                    if not data:
+                        break
+                    await websocket.send(data)
+                    
+                    # ثبت ترافیک دریافتی در کش حافظه موقت (فوق‌العاده سریع و بدون بلاک دیتابیس)
+                    bytes_received = len(data)
+                    gb_received = bytes_received / (1024 ** 3)
+                    
+                    with buffer_lock:
+                        traffic_buffer[username] = traffic_buffer.get(username, 0.0) + gb_received
+            except Exception:
+                pass
+
+        await asyncio.gather(ws_to_ssh(), ssh_to_ws())
+    except Exception:
+        pass
+    finally:
+        if username in active_ws_connections:
+            # ذخیره نهایی زمان خروج
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            now_str = datetime.now().strftime("%m-%d %H:%M")
+            cursor.execute("UPDATE users SET last_online = ? WHERE username = ?", (now_str, username))
+            conn.commit()
+            conn.close()
+            del active_ws_connections[username]
+
+# کلاس مدیریت سرور وب‌ساکت به صورت داینامیک
+class DynamicWSServer:
+    def __init__(self):
+        self.server = None
+        self.loop = None
+        self.port = None
+
+    def start(self, port):
+        self.port = port
+        self.loop = asyncio.new_event_loop()
+        threading.Thread(target=self._run_server, daemon=True).start()
+
+    def _run_server(self):
+        asyncio.set_event_loop(self.loop)
+        # باز کردن پورت در سیستم‌عامل و فایروال به صورت کاملا خودکار
+        os.system(f"ufw allow {self.port}/tcp > /dev/null 2>&1")
+        os.system(f"iptables -A INPUT -p tcp --dport {self.port} -j ACCEPT > /dev/null 2>&1")
+        
+        start_server = websockets.serve(ssh_ws_handler, "0.0.0.0", self.port)
+        self.server = self.loop.run_until_complete(start_server)
+        self.loop.run_forever()
+
+    def stop(self):
+        if self.server and self.loop:
+            # بستن پورت قبلی در فایروال جهت مسائل امنیتی
+            os.system(f"ufw delete allow {self.port}/tcp > /dev/null 2>&1")
+            
+            self.loop.call_soon_threadsafe(self.server.close)
+            self.loop.call_soon_threadsafe(self.loop.stop)
+
+ws_manager = DynamicWSServer()
+
+@app.on_event("startup")
+async def startup_event():
+    # راه‌اندازی سرور وب‌ساکت بر اساس آخرین پورت ذخیره‌شده
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key='ws_port'")
+    port = int(cursor.fetchone()[0])
+    conn.close()
+    
+    ws_manager.start(port)
+    # شروع تسک پس‌زمینه بروزرسانی ترافیک دیتابیس
+    asyncio.create_task(flush_traffic_buffer_loop())
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -386,7 +544,11 @@ async def get_data():
     conn = get_db()
     cursor = conn.cursor()
     
-    # همگام‌سازی و خواندن کاربران
+    # خواندن تنظیمات فعلی برای نمایش روی فرم
+    cursor.execute("SELECT * FROM settings")
+    settings_rows = cursor.fetchall()
+    settings_dict = {row['key']: row['value'] for row in settings_rows}
+
     cursor.execute("SELECT * FROM users")
     db_users = cursor.fetchall()
     
@@ -398,7 +560,6 @@ async def get_data():
     
     for row in db_users:
         u = dict(row)
-        # محاسبه روزهای باقی‌مانده
         exp = datetime.strptime(u['expiry_date'], "%Y-%m-%d")
         days_left = (exp - datetime.now()).days
         if days_left < 0:
@@ -438,6 +599,7 @@ async def get_data():
             "total_volume": total_volume,
             "used_volume": used_volume
         },
+        "settings": settings_dict,
         "users": users_list
     }
 
@@ -452,7 +614,6 @@ async def create_user(user: UserCreate):
             (user.username, user.password, user.limit, expiry)
         )
         conn.commit()
-        # ساخت کاربر سیستمی واقعی در لینوکس جهت اتصال SSH
         os.system(f"useradd -m -s /bin/false {user.username}")
         os.system(f"echo '{user.username}:{user.password}' | chpasswd")
     except sqlite3.IntegrityError:
@@ -482,9 +643,9 @@ async def toggle_user(username: str):
         cursor.execute("UPDATE users SET status = ? WHERE username = ?", (new_status, username))
         conn.commit()
         if new_status == 'suspended':
-            os.system(f"usermod -L {username}") # قفل کردن اکانت سیستمی
+            os.system(f"usermod -L {username}")
         else:
-            os.system(f"usermod -U {username}") # فعال‌سازی مجدد
+            os.system(f"usermod -U {username}")
     conn.close()
     return {"status": "success"}
 
@@ -497,103 +658,43 @@ async def reset_traffic(username: str):
     conn.close()
     return {"status": "success"}
 
+@app.post("/api/settings")
+async def save_settings(payload: SettingsUpdate):
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # دریافت پورت قدیمی برای مقایسه
+    cursor.execute("SELECT value FROM settings WHERE key='ws_port'")
+    old_port = cursor.fetchone()[0]
+    
+    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('admin_username', ?)", (payload.admin_username,))
+    if payload.admin_password:
+        cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('admin_password', ?)", (payload.admin_password,))
+    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('ws_port', ?)", (payload.ws_port,))
+    conn.commit()
+    conn.close()
+    
+    # اگر پورت تغییر کرده بود، سرور وب‌ساکت را ریستارت و داینامیک لود می‌کنیم
+    if old_port != payload.ws_port:
+        global ws_manager
+        ws_manager.stop()
+        ws_manager = DynamicWSServer()
+        ws_manager.start(int(payload.ws_port))
+        
+    return {"status": "success", "detail": "تنظیمات ذخیره و پورت جدید روی سیستم اعمال شد!"}
+
 @app.get("/api/backup")
 async def download_backup():
     if os.path.exists(DB_PATH):
         return FileResponse(DB_PATH, media_type="application/octet-stream", filename="users_backup.db")
     raise HTTPException(status_code=404, detail="No backup available")
 
-# وب‌ساکت پروکسی فوق‌سریع و مستقیم به پورت محلی SSH (22)
-async def ssh_ws_handler(websocket, path):
-    # این تابع ترافیک وب‌ساکت را با کمترین سربار به SSH محلی پاس می‌دهد
-    # برای احراز هویت اولیه، بررسی ترافیک و ثبت اتصالات آنلاین کاربران بسیار بهینه عمل می‌کند.
-    try:
-        # شبیه‌ساز اتصال برای هماهنگی لاگین و ردیابی ترافیک دریافتی (Received)
-        username = "unknown"
-        # هدر ارتقا حاوی جزییات اتصال کاربر لینوکس
-        headers = websocket.request_headers
-        # در پروتکل‌های اتصال وب‌ساکت SSH، مسیرها معمولاً یوزرنیم را به عنوان شناسه حمل می‌کنند
-        path_parts = path.strip("/").split("/")
-        if len(path_parts) > 0 and path_parts[0]:
-            username = path_parts[0]
-            
-        # ثبت اتصال آنلاین
-        active_ws_connections[username] = datetime.now()
-        
-        # اتصال محلی به SSH
-        reader, writer = await asyncio.open_connection('127.0.0.1', 22)
-        
-        async def ws_to_ssh():
-            try:
-                async for message in websocket:
-                    writer.write(message)
-                    await writer.drain()
-            except Exception:
-                pass
-            finally:
-                writer.close()
-
-        async def ssh_to_ws():
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            try:
-                while True:
-                    data = await reader.read(4096)
-                    if not data:
-                        break
-                    await websocket.send(data)
-                    
-                    # ثبت دقیق حجم مصرفی دریافتی (Received Bytes) کاربر
-                    bytes_received = len(data)
-                    gb_received = bytes_received / (1024 ** 3)
-                    
-                    cursor.execute(
-                        "UPDATE users SET volume_used = volume_used + ? WHERE username = ?",
-                        (gb_received, username)
-                    )
-                    conn.commit()
-            except Exception:
-                pass
-            finally:
-                conn.close()
-
-        await asyncio.gather(ws_to_ssh(), ssh_to_ws())
-    except Exception as e:
-        pass
-    finally:
-        if username in active_ws_connections:
-            # ذخیره آخرین زمان آنلاین بودن قبل خروج
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            now_str = datetime.now().strftime("%m-%d %H:%M")
-            cursor.execute("UPDATE users SET last_online = ? WHERE username = ?", (now_str, username))
-            conn.commit()
-            conn.close()
-            del active_ws_connections[username]
-
-# اجرای وب‌ساکت مستقل و بهینه در فرآیند پس‌زمینه
-def start_ws_server():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT value FROM settings WHERE key='ws_port'")
-    port = int(cursor.fetchone()[0])
-    conn.close()
-    
-    start_server = websockets.serve(ssh_ws_handler, "0.0.0.0", port)
-    asyncio.get_event_loop().run_until_complete(start_server)
-    asyncio.get_event_loop().run_forever()
-
 if __name__ == "__main__":
-    import threading
-    # اجرای وب‌ساکت در ترد جداگانه جهت کارایی بالا
-    t = threading.Thread(target=start_ws_server, daemon=True)
-    t.start()
-    
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
 EOF
 
-# ۴. ایجاد فایل‌های سرویس سیستم‌عامل (Systemd) جهت پایداری ۱۰۰٪
+# ۴. تنظیم پایداری لود بالا روی سیستم‌عامل
 cat << 'EOF' > /etc/systemd/system/ssh-panel.service
 [Unit]
 Description=SSH Management and WS Panel
@@ -612,11 +713,9 @@ EOF
 # فعال‌سازی سرویس‌ها
 systemctl daemon-reload
 systemctl enable ssh-panel.service
-systemctl start ssh-panel.service
+systemctl restart ssh-panel.service
 
 echo "=================================================="
-echo "نصب با موفقیت انجام شد!"
+echo "بروزرسانی با موفقیت اعمال شد!"
 echo "آدرس پنل مدیریت: http://YOUR_SERVER_IP:8000"
-echo "نام کاربری پیش‌فرض مدیریت: admin"
-echo "رمز عبور پیش‌فرض مدیریت: admin"
 echo "=================================================="
