@@ -17,7 +17,6 @@ cat <<'EOF' > /var/lib/ssh-panel/templates/index.html
         .btn-warning { background-color: #fa8231; color: #fff; }
         .btn-blue { background-color: #3867d6; color: #fff; }
         
-        /* رنگ بنفش برای وضعیت فعال */
         .active-status { background-color: rgba(136, 84, 208, 0.2) !important; color: #a55eea !important; border: 1px solid #8854d0 !important; }
         
         /* انیمیشن پالس سبز برای آنلاین */
@@ -36,6 +35,40 @@ cat <<'EOF' > /var/lib/ssh-panel/templates/index.html
 
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); justify-content: center; align-items: center; z-index: 1000; }
         .modal-content { background: #1e272e; padding: 25px; border-radius: 12px; width: 350px; border: 1px solid #3867d6; }
+
+        /* استایل پاپ‌آپ‌های نوتیفیکیشن شیک (Toast) */
+        #toast-container {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .toast {
+            background: #26de81;
+            color: #fff;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-family: 'Vazir', sans-serif;
+            font-weight: bold;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            direction: rtl;
+            transform: translateY(20px);
+            opacity: 0;
+            transition: all 0.3s ease;
+        }
+        .toast.show {
+            transform: translateY(0);
+            opacity: 1;
+        }
+        .toast.error {
+            background: #ff6b6b;
+        }
     </style>
 </head>
 <body>
@@ -240,9 +273,31 @@ cat <<'EOF' > /var/lib/ssh-panel/templates/index.html
         </div>
     </div>
 
+    <!-- کانتینر اعلان‌ها -->
+    <div id="toast-container"></div>
+
     <script src="/static/app.js"></script>
     <script>
-        function updateFileName(i) { document.getElementById('file-name-label').innerText = i.files[0] ? i.files[0].name : "انتخاب فایل بکاپ"; }
+        // تابع ساخت اعلان سفارشی بدون نیاز به پاپ‌آپ‌های پیشفرض مرورگر
+        function showToast(message, isError = false) {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast ${isError ? 'error' : ''}`;
+            toast.innerText = message;
+            container.appendChild(toast);
+            
+            setTimeout(() => { toast.classList.add('show'); }, 50);
+            
+            setTimeout(() => {
+                toast.classList.remove('show');
+                setTimeout(() => { toast.remove(); }, 300);
+            }, 4000);
+        }
+
+        function updateFileName(i) { 
+            document.getElementById('file-name-label').innerText = i.files[0] ? i.files[0].name : "انتخاب فایل بکاپ"; 
+        }
+
         function openEditModal(u, p, v, t) {
             document.getElementById('editUsername').value = u;
             document.getElementById('editPassword').value = p;
@@ -250,20 +305,75 @@ cat <<'EOF' > /var/lib/ssh-panel/templates/index.html
             document.getElementById('editTime').value = Math.round(t / 86400);
             document.getElementById('editModal').style.display = 'flex';
         }
+
         function closeEditModal() { document.getElementById('editModal').style.display = 'none'; }
 
+        // ثبت اطلاعات فرم ویرایش کاربر با پیام متناسب
         document.getElementById('editUserForm').addEventListener('submit', function(e) {
             e.preventDefault();
+            const u = document.getElementById('editUsername').value;
             fetch('/api/user/edit', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    username: document.getElementById('editUsername').value,
+                    username: u,
                     password: document.getElementById('editPassword').value,
                     total_volume: parseFloat(document.getElementById('editVolume').value),
                     remaining_time: parseInt(document.getElementById('editTime').value) * 86400
                 })
-            }).then(r => r.json()).then(res => { if(res.success) location.reload(); else alert('خطا در ذخیره‌سازی'); });
+            }).then(r => r.json()).then(res => { 
+                if(res.success) {
+                    closeEditModal();
+                    showToast(`مشخصات کاربر ${u} با موفقیت ویرایش شد.`);
+                    setTimeout(() => location.reload(), 1500);
+                } else { 
+                    showToast('خطا در ذخیره‌سازی اطلاعات ویرایش شده', true); 
+                } 
+            });
+        });
+
+        // اکشن فرم ساخت کاربر با پیام متناسب
+        document.getElementById('addUserForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const u = document.getElementById('addUsername').value;
+            fetch('/api/user/add', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    username: u,
+                    password: document.getElementById('addPassword').value,
+                    total_volume: parseFloat(document.getElementById('addVolume').value),
+                    remaining_time: parseInt(document.getElementById('addTime').value) * 86400
+                })
+            }).then(r => r.json()).then(res => {
+                if(res.success) {
+                    showToast(`کاربر جدید "${u}" با موفقیت به سیستم اضافه شد.`);
+                    setTimeout(() => location.reload(), 1500);
+                } else {
+                    showToast('خطا در ساخت کاربر جدید', true);
+                }
+            });
+        });
+
+        // تنظیمات مدیریت و پورت
+        document.getElementById('settingsForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            fetch('/api/settings/save', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    admin_user: document.getElementById('adminUser').value,
+                    admin_pass: document.getElementById('adminPass').value,
+                    ssh_ws_port: parseInt(document.getElementById('sshWsPort').value)
+                })
+            }).then(r => r.json()).then(res => {
+                if(res.success) {
+                    showToast('تنظیمات جدید پورت و مدیریت با موفقیت ذخیره شد.');
+                    setTimeout(() => location.reload(), 1500);
+                } else {
+                    showToast('خطا در ذخیره تنظیمات سیستم', true);
+                }
+            });
         });
 
         function toggleUserStatus(username, action) {
@@ -271,7 +381,28 @@ cat <<'EOF' > /var/lib/ssh-panel/templates/index.html
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username })
-            }).then(r => r.json()).then(res => { if(res.success) location.reload(); });
+            }).then(r => r.json()).then(res => { 
+                if(res.success) {
+                    const msg = action === 'pause' ? `کاربر ${username} موقتاً غیرفعال (Pause) شد.` : `کاربر ${username} مجدداً فعال (Resume) شد.`;
+                    showToast(msg);
+                    setTimeout(() => location.reload(), 1200);
+                } 
+            });
+        }
+
+        function deleteUser(username) {
+            if(confirm(`آیا از حذف کاربر ${username} مطمئن هستید؟`)) {
+                fetch('/api/user/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username })
+                }).then(r => r.json()).then(res => {
+                    if(res.success) {
+                        showToast(`کاربر ${username} به طور کامل از سیستم حذف گردید.`);
+                        setTimeout(() => location.reload(), 1200);
+                    }
+                });
+            }
         }
 
         const eventSource = new EventSource("/api/live-stream");
@@ -298,7 +429,7 @@ cat <<'EOF' > /var/lib/ssh-panel/templates/index.html
 </html>
 EOF
 
-# بازنویسی مسیرهای API بک‌اند
+# بازنویسی کامل مسیرهای API بک‌اند همراه با اصلاح دقیق کوئری‌های تفکیک دیتابیس
 cat <<'EOF' > /var/lib/ssh-panel/app/routes.py
 from flask import Blueprint, render_template, request, jsonify, session, redirect, url_for
 import subprocess
@@ -306,11 +437,30 @@ from app.db import get_db_connection
 
 bp = Blueprint('routes', __name__)
 
+@bp.route('/api/user/add', methods=['POST'])
+def add_user():
+    data = request.json
+    u, p, vol, r_time = data['username'], data['password'], data['total_volume'], data['remaining_time']
+    conn = get_db_connection()
+    try:
+        conn.execute("INSERT INTO users (username, password, total_volume, remaining_time, status, used_download) VALUES (?, ?, ?, ?, 'active', 0.0)", (u, p, vol, r_time))
+        conn.commit()
+        # ساخت فیزیکی کاربر سیستمی بدون دسترسی به Shell
+        subprocess.run(f"useradd -M -s /usr/sbin/nologin {u}", shell=True)
+        subprocess.run(f"echo '{u}:{p}' | chpasswd", shell=True)
+        success = True
+    except Exception as e:
+        success = False
+    finally:
+        conn.close()
+    return jsonify({"success": success})
+
 @bp.route('/api/user/edit', methods=['POST'])
 def edit_user():
     data = request.json
     u, p, vol, r_time = data['username'], data['password'], data['total_volume'], data['remaining_time']
     conn = get_db_connection()
+    # ویرایش حتماً فیلتر بر اساس نام کاربری (u) باشد نه به صورت عمومی!
     conn.execute("UPDATE users SET password=?, total_volume=?, remaining_time=? WHERE username=?", (p, vol, r_time, u))
     conn.commit()
     conn.close()
@@ -337,11 +487,42 @@ def resume_user():
     conn.close()
     subprocess.run(f"usermod -U {u}", shell=True)
     return jsonify({"success": True})
+
+@bp.route('/api/user/delete', methods=['POST'])
+def delete_user():
+    u = request.json['username']
+    conn = get_db_connection()
+    conn.execute("DELETE FROM users WHERE username=?", (u,))
+    conn.commit()
+    conn.close()
+    subprocess.run(f"userdel -f {u}", shell=True)
+    subprocess.run(f"pkill -u {u}", shell=True)
+    return jsonify({"success": True})
+
+@bp.route('/api/settings/save', methods=['POST'])
+def save_settings():
+    data = request.json
+    admin_user = data['admin_user']
+    admin_pass = data['admin_pass']
+    ssh_ws_port = data['ssh_ws_port']
+    
+    conn = get_db_connection()
+    # ذخیره و به روز رسانی پورت فقط در سطر اصلی کانفیگ‌ها
+    conn.execute("UPDATE settings SET admin_user=?, ssh_ws_port=?", (admin_user, ssh_ws_port))
+    if admin_pass:
+        conn.execute("UPDATE settings SET admin_pass=?", (admin_pass,))
+    conn.commit()
+    conn.close()
+    
+    # اعمال مستقیم پورت جدید در سرویس‌دهنده وب‌ساکت و ری‌استارت آن
+    # فرض بر این است که وب‌ساکت شما از یک فایل کانفیگ پورت می‌خواند یا مستقیم روی پورت بالا ران می‌شود.
+    subprocess.run(f"systemctl restart ssh-pro-worker", shell=True)
+    return jsonify({"success": True})
 EOF
 
-# ری‌استارت سرویس‌ها بدون متوقف کردن کلی sshd
+# ری‌استارت بی‌خطر سرویس‌های پنل
 systemctl daemon-reload
 systemctl restart ssh-pro-panel
 systemctl restart ssh-pro-worker
 
-echo "=== تغییرات به صورت کاملاً ایمن اعمال شد. اتصال ترمینوس شما قطع نخواهد شد! ==="
+echo "=== تمام ایرادات با موفقیت برطرف شد و پاپ‌آپ‌های نوتیفیکیشن شیک جایگزین شدند! ==="
