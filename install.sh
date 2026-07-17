@@ -1072,7 +1072,7 @@ WantedBy=multi-user.target
 EOF
 
 # ۲۱. باز کردن پورت جدید ۵۰۰۰ و پورت ۸۰ روی فایروال لینوکس
-iptables -I INPUT -p tcp --dport 5000 -j ACCEPT
+iptables -I INPUT -p tcp --dport 8000 -j ACCEPT
 iptables -I INPUT -p tcp --dport 80 -j ACCEPT
 if command -v ufw >/dev/null 2>&1; then
     ufw allow 5000/tcp
@@ -1088,5 +1088,5 @@ systemctl enable --now ssh-ws
 
 echo "==============================================="
 echo "=== نصب تمیز کامل شد!                        ==="
-echo "=== آدرس وب پنل جدید: http://YOUR_VPS_IP:5000 ==="
+echo "=== آدرس وب پنل جدید: http://YOUR_VPS_IP:8000 ==="
 echo "==============================================="
