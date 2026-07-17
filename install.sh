@@ -3,6 +3,7 @@
 # SSH Management Panel - High-Engineering Installation Script
 # Designed for: Amir
 # Features: WAL SQLite, Precise /proc/<pid>/io Traffic Tracking, Systemd Daemons, Toast UI
+# Port: 8000
 # ==============================================================================
 
 # Coloured outputs
@@ -333,7 +334,7 @@ def save_settings():
     return jsonify({"success": True})
 EOF
 
-# 5. Create Flask Entrypoint App Runner
+# 5. Create Flask Entrypoint App Runner (Port changed to 8000)
 cat <<'EOF' > /var/lib/ssh-panel/run.py
 from flask import Flask
 from app.routes import bp
@@ -345,7 +346,7 @@ app.secret_key = "highly_engineered_secure_key"
 app.register_blueprint(bp)
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=8000, debug=False)
 EOF
 
 # 6. Service Registrations for Permanent Uptime
@@ -393,4 +394,4 @@ systemctl restart ssh-pro-worker.service
 systemctl restart ssh-pro-panel.service
 
 echo -e "${GREEN}=== نصب با موفقیت پایان یافت! ===${NC}"
-echo -e "${GREEN}آدرس دسترسی به پنل: http://YOUR_SERVER_IP:5000${NC}"
+echo -e "${GREEN}آدرس دسترسی به پنل: http://YOUR_SERVER_IP:8000${NC}"
