@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# SSH Management Panel - High-Engineering Installation Script
+# SSH Management Panel - High-Engineering Installation Script (Fixed Version)
 # Designed for: Amir
-# Features: WAL SQLite, Precise /proc/<pid>/io Traffic Tracking, Systemd Daemons, Toast UI
+# Features: Real-time traffic, Quick termination on Pause, SSH Port Changer
 # Port: 8000
 # ==============================================================================
 
@@ -11,11 +11,11 @@ GREEN='\033[0;32m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-echo -e "${GREEN}=== شروع فرآیند نصب مهندسی‌شده پنل مدیریت کاربران ===${NC}"
+echo -e "${GREEN}=== شروع فرآیند نصب و اصلاح پنل مدیریت کاربران ===${NC}"
 
 # 1. Install System Requirements
 echo -e "${GREEN}[1/5] در حال نصب پیش‌نیازها...${NC}"
-apt-get update -y && apt-get install -y python3 python3-pip python3-flask sqlite3 procps lsof -y || true
+apt-get update -y && apt-get install -y python3 python3-pip python3-flask sqlite3 procps lsof psmisc -y || true
 
 # Create directory structures
 mkdir -p /var/lib/ssh-panel/app
@@ -42,11 +42,11 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 INSERT OR IGNORE INTO settings (key, value) VALUES ('admin_user', 'admin');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('admin_pass', 'admin');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('ssh_ws_port', '80');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('ssh_ws_port', '22');
 EOF
 
-# 3. Intelligent Traffic & Session Monitor Daemon
-echo -e "${GREEN}[3/5] ایجاد سرویس مانیتورینگ ترافیک (/proc/pid/io)...${NC}"
+# 3. Intelligent Traffic & Session Monitor Daemon (Optimized)
+echo -e "${GREEN}[3/5] ایجاد سرویس مانیتورینگ ترافیک اصلاح‌شده...${NC}"
 cat <<'EOF' > /var/lib/ssh-panel/worker.py
 import os
 import sys
@@ -74,31 +74,31 @@ def get_user_pids():
 
     for user in users:
         try:
-            pids_str = subprocess.check_output(["pgrep", "-u", user]).decode().strip()
+            # Finding PIDs accurately using ps command
+            pids_str = subprocess.check_output(["ps", "-u", user, "-o", "pid="]).decode().strip()
             if pids_str:
                 user_pids[user] = [int(p) for p in pids_str.split()]
-        except subprocess.CalledProcessError:
+        except Exception:
             continue
     return user_pids
 
 def update_traffic_and_status():
     global pid_io_cache
     user_pids = get_user_pids()
-    active_online_users = []
-
     conn = get_db()
     
+    # 1. Forcefully disconnect users who are not active
     restricted_users = [row[0] for row in conn.execute("SELECT username FROM users WHERE status != 'active'").fetchall()]
-    
     for user in restricted_users:
         if user in user_pids:
-            subprocess.run(f"pkill -u {user}", shell=True)
+            # Force kill all connections immediately
+            subprocess.run(f"killall -u {user} -9", shell=True)
+            subprocess.run(f"skill -u {user} -9", shell=True)
 
+    # 2. Track IO traffic
     current_pids_seen = set()
     for user, pids in user_pids.items():
         user_bytes = 0
-        is_online = False
-        
         for pid in pids:
             current_pids_seen.add(pid)
             try:
@@ -120,36 +120,30 @@ def update_traffic_and_status():
                         user_bytes += diff
                 else:
                     pid_io_cache[pid] = total_io
-                
-                is_online = True
-            except (FileNotFoundError, ProcessLookupError, PermissionError):
+            except Exception:
                 continue
-
-        if is_online:
-            active_online_users.append(user)
 
         if user_bytes > 0:
             user_gb = user_bytes / (1024 ** 3)
             conn.execute("UPDATE users SET used_traffic = used_traffic + ? WHERE username = ?", (user_gb, user))
             conn.commit()
 
+    # Clean dead PIDs from cache
     for dead_pid in list(pid_io_cache.keys()):
         if dead_pid not in current_pids_seen:
             pid_io_cache.pop(dead_pid, None)
 
+    # 3. Check time-decay and volume limits
     users_data = conn.execute("SELECT username, total_volume, used_traffic, remaining_time FROM users WHERE status='active'").fetchall()
     for username, total_volume, used_traffic, remaining_time in users_data:
         new_time = max(0, remaining_time - 10)
         conn.execute("UPDATE users SET remaining_time = ? WHERE username = ?", (new_time, username))
         
-        if used_traffic >= total_volume:
+        if used_traffic >= total_volume or new_time <= 0:
             conn.execute("UPDATE users SET status = 'expired' WHERE username = ?", (username,))
             subprocess.run(f"usermod -L {username}", shell=True)
-            subprocess.run(f"pkill -u {username}", shell=True)
-        elif new_time <= 0:
-            conn.execute("UPDATE users SET status = 'expired' WHERE username = ?", (username,))
-            subprocess.run(f"usermod -L {username}", shell=True)
-            subprocess.run(f"pkill -u {username}", shell=True)
+            subprocess.run(f"killall -u {username} -9", shell=True)
+            subprocess.run(f"skill -u {username} -9", shell=True)
 
     conn.commit()
     conn.close()
@@ -158,7 +152,7 @@ if __name__ == "__main__":
     while True:
         try:
             update_traffic_and_status()
-        except Exception as e:
+        except Exception:
             pass
         time.sleep(10)
 EOF
@@ -169,6 +163,7 @@ echo -e "${GREEN}[4/5] پیکربندی وب‌سرور کنترل پنل...${NC
 cat <<'EOF' > /var/lib/ssh-panel/app/routes.py
 import sqlite3
 import subprocess
+import re
 from flask import Blueprint, render_template, request, jsonify
 
 bp = Blueprint('routes', __name__)
@@ -193,13 +188,16 @@ def index():
     active_count = 0
     online_count = 0
     
+    # Accurate Online Check
     online_users = []
     for row in users_rows:
         username = row[0]
         try:
-            subprocess.check_output(["pgrep", "-u", username])
-            online_users.append(username)
-        except subprocess.CalledProcessError:
+            # Check if there are active processes for this user
+            pids = subprocess.check_output(["ps", "-u", username, "-o", "pid="]).decode().strip()
+            if pids:
+                online_users.append(username)
+        except Exception:
             pass
 
     for row in users_rows:
@@ -282,7 +280,9 @@ def pause_user():
     conn.commit()
     conn.close()
     subprocess.run(f"usermod -L {u}", shell=True)
-    subprocess.run(f"pkill -u {u}", shell=True)
+    # Terminate user's sessions aggressively
+    subprocess.run(f"killall -u {u} -9", shell=True)
+    subprocess.run(f"skill -u {u} -9", shell=True)
     return jsonify({"success": True})
 
 @bp.route('/api/user/resume', methods=['POST'])
@@ -312,7 +312,8 @@ def delete_user():
     conn.commit()
     conn.close()
     subprocess.run(f"userdel -f {u}", shell=True)
-    subprocess.run(f"pkill -u {u}", shell=True)
+    subprocess.run(f"killall -u {u} -9", shell=True)
+    subprocess.run(f"skill -u {u} -9", shell=True)
     return jsonify({"success": True})
 
 @bp.route('/api/settings/save', methods=['POST'])
@@ -320,7 +321,7 @@ def save_settings():
     data = request.json
     admin_user = data['admin_user']
     admin_pass = data['admin_pass']
-    ssh_ws_port = data['ssh_ws_port']
+    ssh_ws_port = data['ssh_ws_port'] # New SSH Port
     
     conn = get_db()
     conn.execute("UPDATE settings SET value=? WHERE key='admin_user'", (admin_user,))
@@ -330,11 +331,29 @@ def save_settings():
     conn.commit()
     conn.close()
     
-    subprocess.run("systemctl restart ssh-pro-ws || true", shell=True)
+    # ⚙️ Real SSH Port Changer Configuration
+    try:
+        with open("/etc/ssh/sshd_config", "r") as f:
+            config = f.read()
+        
+        # Replace or add Port config
+        if re.search(r'^\s*#?\s*Port\s+\d+', config, re.MULTILINE):
+            config = re.sub(r'^\s*#?\s*Port\s+\d+', f'Port {ssh_ws_port}', config, flags=re.MULTILINE)
+        else:
+            config += f"\nPort {ssh_ws_port}\n"
+            
+        with open("/etc/ssh/sshd_config", "w") as f:
+            f.write(config)
+            
+        # Restart SSH service
+        subprocess.run("systemctl restart sshd || systemctl restart ssh", shell=True)
+    except Exception:
+        pass
+        
     return jsonify({"success": True})
 EOF
 
-# 5. Create Flask Entrypoint App Runner (Port changed to 8000)
+# 5. Create Flask Entrypoint App Runner (Port: 8000)
 cat <<'EOF' > /var/lib/ssh-panel/run.py
 from flask import Flask
 from app.routes import bp
