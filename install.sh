@@ -46,11 +46,11 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE NOT NULL,
         password TEXT NOT NULL,
-        remaining_time INTEGER NOT NULL, -- زمان باقی‌مانده به ثانیه
-        total_volume REAL NOT NULL,      -- حجم کل مجاز دانلود به گیگابایت
-        used_download REAL DEFAULT 0.0,  -- مصرف دانلود کاربر
-        used_upload REAL DEFAULT 0.0,    -- مصرف آپلود کاربر (محاسبه جداگانه، بدون کسر سهمیه)
-        status TEXT DEFAULT 'active',    -- active, paused, expired
+        remaining_time INTEGER NOT NULL,
+        total_volume REAL NOT NULL,
+        used_download REAL DEFAULT 0.0,
+        used_upload REAL DEFAULT 0.0,
+        status TEXT DEFAULT 'active',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
@@ -78,7 +78,7 @@ EOF
 # ۵. ایجاد فایل امنیت و احراز هویت (app/security.py)
 cat <<'EOF' > /var/lib/ssh-panel/app/security.py
 from functools import wraps
-from flask import session, redirect, url_for, flash
+from flask import session, redirect, url_for
 from app.db import get_db_connection
 
 def login_required(f):
@@ -119,11 +119,8 @@ def apply_system_ports():
     cursor = conn.cursor()
     cursor.execute("SELECT value FROM settings WHERE key='ssh_port'")
     ssh_port = cursor.fetchone()['value']
-    cursor.execute("SELECT value FROM settings WHERE key='ssh_ws_port'")
-    ssh_ws_port = cursor.fetchone()['value']
     conn.close()
     
-    # تنظیم پورت اصلی OpenSSH در لینوکس
     try:
         sshd_config_path = "/etc/ssh/sshd_config"
         if os.path.exists(sshd_config_path):
@@ -151,7 +148,6 @@ def apply_system_ports():
     except Exception:
         pass
 
-    # ری‌استارت سرویس وب‌سوکت برای همگام‌سازی پورت جدید
     try:
         subprocess.run(["systemctl", "restart", "ssh-ws"], capture_output=True)
     except Exception:
@@ -172,7 +168,6 @@ def add_user(username, password, duration_seconds, volume_gb):
         VALUES (?, ?, ?, ?, 'active')
         """, (username, password, int(duration_seconds), float(volume_gb)))
         
-        # ساخت کاربر سیستم لینوکس با شل غیرفعال جهت امنیت بالا
         subprocess.run(["useradd", "-m", "-s", "/bin/false", username], capture_output=True)
         subprocess.run(["chpasswd"], input=f"{username}:{password}", text=True, capture_output=True)
         
@@ -198,13 +193,11 @@ def update_user(username, password, duration_seconds, volume_gb, status):
         WHERE username=?
         """, (password, int(duration_seconds), float(volume_gb), status, username))
         
-        # بروزرسانی پسورد لینوکس
         subprocess.run(["chpasswd"], input=f"{username}:{password}", text=True, capture_output=True)
         
         if status == 'active':
             subprocess.run(["usermod", "-U", username], capture_output=True)
         else:
-            # مسدودسازی آنی و قطع اتصالات فعال در صورت Pause یا Expired شدن
             subprocess.run(["usermod", "-L", username], capture_output=True)
             subprocess.run(f"pkill -u {username}", shell=True, capture_output=True)
             
@@ -223,7 +216,7 @@ def delete_user(username):
         subprocess.run(["userdel", "-r", username], capture_output=True)
         subprocess.run(f"pkill -u {username}", shell=True, capture_output=True)
         conn.commit()
-        return True, "کاربر به همراه دایرکتوری و سشن‌های فعال حذف شد."
+        return True, "کاربر حذف شد."
     except Exception as e:
         return False, f"خطا در حذف کاربر: {str(e)}"
     finally:
@@ -235,7 +228,7 @@ def reset_usage(username):
     try:
         cursor.execute("UPDATE users SET used_download=0.0, used_upload=0.0 WHERE username=?", (username,))
         conn.commit()
-        return True, "مصرف ترافیک کاربر با موفقیت صفر شد."
+        return True, "مصرف ترافیک کاربر صفر شد."
     except Exception as e:
         return False, str(e)
     finally:
@@ -298,7 +291,6 @@ def import_backup_json(json_file_path):
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (u['username'], u['password'], u['remaining_time'], u['total_volume'], u['used_download'], u['used_upload'], u['status']))
                 
-                # بازسازی کامل کاربر روی لینوکس سرور جدید با اطلاعات قبلی
                 subprocess.run(["userdel", "-r", u['username']], capture_output=True)
                 subprocess.run(["useradd", "-m", "-s", "/bin/false", u['username']], capture_output=True)
                 subprocess.run(["chpasswd"], input=f"{u['username']}:{u['password']}", text=True, capture_output=True)
@@ -308,9 +300,9 @@ def import_backup_json(json_file_path):
                     
         conn.commit()
         conn.close()
-        return True, "بازیابی اطلاعات انجام شد. اکانت‌های سیستمی لینوکس با موفقیت همگام‌سازی شدند."
+        return True, "بازیابی اطلاعات انجام شد."
     except Exception as e:
-        return False, f"خطا در بازیابی ساختار فایل: {str(e)}"
+        return False, f"خطا در بازیابی: {str(e)}"
 EOF
 
 # ۹. پایش زنده و مصرف دقیق دانلود (app/live.py)
@@ -347,13 +339,11 @@ def track_traffic_and_sessions():
         used_dl = u['used_download']
         total_vol = u['total_volume']
         
-        # ۱. کسر پویای ثانیه‌ای زمان در صورت اتصال همزمان
         if username in online_users:
             new_time = max(0, rem_time - 2)
             cursor.execute("UPDATE users SET remaining_time=? WHERE id=?", (new_time, u_id))
             rem_time = new_time
             
-        # ۲. محاسبه و پایش قطع اکانت در صورت اتمام محدودیت‌ها
         if rem_time <= 0 or used_dl >= total_vol:
             cursor.execute("UPDATE users SET status='expired' WHERE id=?", (u_id,))
             subprocess.run(["usermod", "-L", username], capture_output=True)
@@ -366,8 +356,7 @@ EOF
 # ۱۰. هسته اصلی وب‌سایت ادمین (app/api.py)
 cat <<'EOF' > /var/lib/ssh-panel/app/api.py
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, flash, send_file
-import os
-from app.db import get_db_connection, init_db
+from app.db import get_db_connection
 from app.security import login_required, get_admin_credentials, update_admin_credentials
 from app.users import add_user, update_user, delete_user, reset_usage
 from app.backup import export_backup_json, import_backup_json
@@ -454,7 +443,7 @@ def update_settings_api():
             update_admin_credentials(data['admin_username'], data['admin_password'])
             
         apply_system_ports()
-        return jsonify({"success": True, "msg": "تنظیمات بروزرسانی و پورت‌ها اعمال شدند."})
+        return jsonify({"success": True, "msg": "تنظیمات بروزرسانی شدند."})
     except Exception as e:
         return jsonify({"success": False, "msg": str(e)})
     finally:
@@ -531,7 +520,6 @@ cat <<'EOF' > /var/lib/ssh-panel/templates/index.html
     </header>
 
     <div class="container">
-        <!-- Dashboard Admin Settings -->
         <div class="row">
             <div class="col card">
                 <h3>تنظیمات سیستم و پورت‌ها</h3>
@@ -562,11 +550,11 @@ cat <<'EOF' > /var/lib/ssh-panel/templates/index.html
 
             <div class="col card">
                 <h3>پشتیبان‌گیری هوشمند (JSON)</h3>
-                <p class="text-muted" style="font-size: 0.85rem; color: #a0a0b0;">انتقال آسان کاربران به سرور جدید بدون از دست رفتن میزان ثانیه‌های باقی‌مانده و مصرف حجم دانلود.</p>
+                <p class="text-muted" style="font-size: 0.85rem; color: #a0a0b0;">انتقال آسان کاربران به سرور جدید بدون از دست رفتن اطلاعات.</p>
                 <div class="backup-actions">
-                    <a href="/api/backup/export" class="btn btn-primary" style="margin-bottom: 15px;">دانلود فایل پشتیبان (بکاپ)</a>
+                    <a href="/api/backup/export" class="btn btn-primary" style="margin-bottom: 15px;">دانلود فایل پشتیبان</a>
                     <div style="border-top: 1px solid #2e2e36; margin-top: 10px; padding-top: 10px;">
-                        <label>انتخاب فایل بکاپ جهت بازگردانی:</label>
+                        <label>انتخاب فایل بکاپ:</label>
                         <input type="file" id="backupFile" accept=".json" style="margin-bottom: 10px;">
                         <button onclick="importBackup()" class="btn btn-warning" style="width: 100%;">آپلود و بازیابی</button>
                     </div>
@@ -574,7 +562,6 @@ cat <<'EOF' > /var/lib/ssh-panel/templates/index.html
             </div>
         </div>
 
-        <!-- Add User Section -->
         <div class="card" style="margin-top: 20px;">
             <h3>ایجاد کاربر جدید</h3>
             <form id="addUserForm" style="display: flex; gap: 10px; flex-wrap: wrap;">
@@ -586,7 +573,6 @@ cat <<'EOF' > /var/lib/ssh-panel/templates/index.html
             </form>
         </div>
 
-        <!-- Users Table -->
         <div class="card" style="margin-top: 20px;">
             <h3>لیست کاربران</h3>
             <div style="overflow-x: auto;">
@@ -635,7 +621,7 @@ cat <<'EOF' > /var/lib/ssh-panel/templates/index.html
 </html>
 EOF
 
-# ۱۴. فایل CSS تم تیره و بسیار مدرن (static/app.css)
+# ۱۴. فایل CSS تم تیره (static/app.css)
 cat <<'EOF' > /var/lib/ssh-panel/static/app.css
 :root {
     --bg-primary: #121214;
@@ -696,7 +682,6 @@ body {
     border-radius: 10px;
     padding: 20px;
     margin-bottom: 20px;
-    box-shadow: 0 4px 15px rgba(0,0,0,0.2);
 }
 
 .row {
@@ -731,12 +716,6 @@ input, select {
     border: 1px solid #3e3e4a;
     border-radius: 6px;
     color: #fff;
-    font-size: 0.95rem;
-}
-
-input:focus, select:focus {
-    outline: none;
-    border-color: var(--accent);
 }
 
 .btn {
@@ -744,8 +723,6 @@ input:focus, select:focus {
     border: none;
     border-radius: 6px;
     cursor: pointer;
-    font-size: 0.95rem;
-    transition: all 0.2s;
     text-decoration: none;
     display: inline-block;
     text-align: center;
@@ -771,12 +748,6 @@ th, td {
 
 th {
     color: var(--text-muted);
-    font-weight: 500;
-}
-
-td input, td select {
-    padding: 5px;
-    font-size: 0.9rem;
 }
 EOF
 
@@ -882,8 +853,8 @@ python3 -m venv /var/lib/ssh-panel/venv
 /var/lib/ssh-panel/venv/bin/pip install --upgrade pip
 /var/lib/ssh-panel/venv/bin/pip install flask gunicorn
 
-# ۱۷. مقداردهی اولیه دیتابیس
-/var/lib/ssh-panel/venv/bin/python -c "from app.db import init_db; init_db()"
+# ۱۷. مقداردهی اولیه دیتابیس (اصلاح شده با PYTHONPATH جهت رفع دائمی خطا)
+PYTHONPATH=/var/lib/ssh-panel /var/lib/ssh-panel/venv/bin/python -c "from app.db import init_db; init_db()"
 
 # ۱۸. کانفیگ سرویس پنل مدیریت (Gunicorn)
 cat <<EOF > /etc/systemd/system/ssh-pro-panel.service
@@ -894,6 +865,7 @@ After=network.target
 [Service]
 User=root
 WorkingDirectory=/var/lib/ssh-panel
+Environment=PYTHONPATH=/var/lib/ssh-panel
 ExecStart=/var/lib/ssh-panel/venv/bin/gunicorn --workers 1 --bind 0.0.0.0:8000 app.api:app
 Restart=always
 
@@ -901,7 +873,7 @@ Restart=always
 WantedBy=multi-user.target
 EOF
 
-# ۱۹. کانفیگ ورکر سبک پایش و مانیتورینگ آنلاین (اجرا در فواصل ۲ ثانیه‌ای)
+# ۱۹. کانفیگ ورکر سبک پایش و مانیتورینگ آنلاین
 cat <<'EOF' > /var/lib/ssh-panel/live_worker.py
 import time
 import sys
@@ -948,7 +920,6 @@ def handle_client(client_socket):
                 b"Upgrade: websocket\r\n"
                 b"Connection: Upgrade\r\n\r\n"
             )
-            # اتصال به OpenSSH محلی سرور
             ssh_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             ssh_socket.connect(('127.0.0.1', 22))
             
